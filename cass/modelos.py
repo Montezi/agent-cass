@@ -173,8 +173,12 @@ class PrevisaoClima(_Contrato):
 # Chaves em inglês, como no contrato.
 
 
+MAX_CARACTERES_PERGUNTA = 500
+
+
 class PedidoAgente(BaseModel):
-    question: str = Field(min_length=1, max_length=1000)  # 1.000: camada 1 do apêndice C
+    # 500: api-contract.md do frontend (MAX_QUESTION_CHARS no agentApi.ts).
+    question: str = Field(min_length=1, max_length=MAX_CARACTERES_PERGUNTA)
     hotspot_id: str | None = None  # gaveta aberta no app; o app sempre manda
     language: Literal["pt", "en"]
 

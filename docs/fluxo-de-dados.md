@@ -62,9 +62,9 @@ repositório do serviço. Ver `docs/api-contract.md:60` do frontend.
 
 Há diferenças entre as cópias dos contratos: o frontend documenta dados v2
 (`baseline_pass`, `threshold_db`, `metadata.schema_version`, `generated_at`) e
-perguntas de até 500 caracteres com erros 400; este backend usa o contrato
-anterior, de 1000 caracteres e validação 422. A integração deve reconciliar essas
-versões em um passo próprio, preservando o contrato público durante esta tarefa.
+erros 400 para pedidos inválidos; este backend ainda valida com 422. O limite da
+pergunta já segue o frontend (até 500 caracteres). A integração deve reconciliar
+o resto em um passo próprio, preservando o contrato público durante esta tarefa.
 
 ## Relação com a avaliação do Decider
 

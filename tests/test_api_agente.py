@@ -765,7 +765,7 @@ def test_stream_tambem_entrega_apenas_a_resposta_verificada(
         pytest.param({"mensagens": [{"papel": "user", "texto": "oi"}]}, id="formato-antigo"),
         pytest.param({"hotspot_id": "guaiba-rs", "language": "pt"}, id="sem-question"),
         pytest.param({"question": "oi", "language": "es"}, id="language-es"),
-        pytest.param({"question": "x" * 1001, "language": "pt"}, id="mais-de-1000"),
+        pytest.param({"question": "x" * 501, "language": "pt"}, id="mais-de-500"),
     ],
 )
 def test_pedido_invalido_e_recusado(

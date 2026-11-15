@@ -70,7 +70,8 @@ Lê `answers.q.noul`, exigindo número finito entre zero e um. Serviço desligad
 falha HTTP/rede, JSON inválido ou resposta fora do formato devolvem `padrao`.
 Chamadores assíncronos executam esse cliente em thread separada.
 
-A camada 1 aplica o limite existente de 1.000 caracteres, regras fixas para
+A camada 1 aplica o limite de 500 caracteres do `api-contract.md` do frontend
+(acima disso, 422 na validação do pedido), regras fixas para
 pedidos explícitos de troca de instruções e alguns temas claramente alheios,
 e as duas perguntas do apêndice C: escopo abaixo de 0,3 (padrão 1,0) ou tentativa
 de injeção acima de 0,7 (padrão 0,0) devolvem `fora_do_escopo` sem executar o

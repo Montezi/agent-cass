@@ -144,7 +144,7 @@ def test_resposta_sem_texto_termina_com_erro(
     [
         {"language": "pt"},
         {"question": "oi", "language": "es"},
-        {"question": "x" * 1001, "language": "pt"},
+        {"question": "x" * 501, "language": "pt"},
     ],
 )
 def test_pedido_invalido_e_http_422_antes_de_abrir_stream(

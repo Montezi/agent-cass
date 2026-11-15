@@ -38,12 +38,17 @@ def test_pedido_sem_hotspot() -> None:
     assert PedidoAgente(question="oi", language="en").hotspot_id is None
 
 
+def test_pergunta_aceita_ate_500_caracteres() -> None:
+    # api-contract.md do frontend: question at most 500 characters (MAX_QUESTION_CHARS).
+    assert len(PedidoAgente(question="x" * 500, language="pt").question) == 500
+
+
 @pytest.mark.parametrize(
     "corpo",
     [
         pytest.param({"hotspot_id": "guaiba-rs", "language": "pt"}, id="sem-question"),
         pytest.param({"question": "", "language": "pt"}, id="question-vazia"),
-        pytest.param({"question": "x" * 1001, "language": "pt"}, id="mais-de-1000"),
+        pytest.param({"question": "x" * 501, "language": "pt"}, id="mais-de-500"),
         pytest.param({"question": "oi"}, id="sem-language"),
         pytest.param({"question": "oi", "language": "es"}, id="language-es"),
     ],
