@@ -141,11 +141,20 @@ com corpo no formato público e `Retry-After`; no SSE isso ocorre antes da abert
 do stream. `/health` e preflight OPTIONS não consomem essa cota.
 
 O contador usa memória do processo, relógio monotônico e até 10.000 IPs ativos.
-Não é uma cota global entre instâncias/reinícios do Cloud Run. Usa
-`request.client.host`, conforme a identidade de cliente entregue pelo servidor;
-não interpreta `X-Forwarded-For` diretamente. Na integração com proxies, a
-configuração de confiança do servidor precisa preservar a identidade real sem
-aceitar endereços forjados.
+Não é uma cota global entre instâncias/reinícios do Cloud Run.
+
+O IP é o primeiro endereço do `X-Forwarded-For` (`cass.limites.ip_do_cliente`).
+No Cloud Run, `request.client.host` é o proxy do Google, e o endereço de quem
+chamou vem no início desse cabeçalho. Sem o cabeçalho, ou se o primeiro item não
+for um IP, vale o `request.client.host`.
+
+**O cabeçalho pode ser falsificado.** Quem chama pode mandar o próprio
+`X-Forwarded-For`, e o primeiro endereço passa a ser o que ele escolheu; trocando
+o valor a cada pedido, ganha cota nova. Este limite só freia o uso casual. O teto
+de custo real é o `--max-instances` do Cloud Run (ver `docs/deploy.md`): o Cloud
+Run não abre instâncias além dele, então os pedidos simultâneos ficam limitados a
+`--max-instances` × `--concurrency` (2 × 80 na variante leve, com a concorrência
+padrão).
 
 ## Bateria de avaliação
 

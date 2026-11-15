@@ -1,5 +1,6 @@
 """Limite local por IP e CORS a partir da configuração carregada na subida."""
 
+import ipaddress
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -65,16 +66,34 @@ class LimitadorPorIP:
             return None
 
 
+def ip_do_cliente(request: Request) -> str:
+    """Primeiro endereço do X-Forwarded-For; sem ele, o cliente da conexão.
+
+    No Cloud Run, request.client.host é o proxy do Google, e quem chamou vem no
+    X-Forwarded-For ("cliente, proxy, ..."). Esse cabeçalho pode ser falsificado:
+    quem chama pode mandar o próprio, e o primeiro endereço vira o que ele quiser.
+    O limite por IP só freia o uso casual; o teto de custo real é o --max-instances
+    do Cloud Run. Um primeiro item que não seja IP cai no client.host, para lixo
+    forjado não virar chave do limitador.
+    """
+    primeiro = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if primeiro:
+        try:
+            return str(ipaddress.ip_address(primeiro))
+        except ValueError:
+            pass
+    return request.client.host if request.client is not None else "desconhecido"
+
+
 def verificar_limite_ip(request: Request) -> int | None:
-    """Compartilha a cota JSON/SSE; usa somente o cliente informado pelo servidor."""
+    """Compartilha a cota JSON/SSE por ip_do_cliente (ver o aviso sobre falsificação)."""
     estado = request.app.state
     config = estado.config
     if getattr(estado, "limite_ip_config", None) is not config:
         # Também permite testes ASGI sem lifespan que instalam a própria config.
         estado.limite_ip = LimitadorPorIP()
         estado.limite_ip_config = config
-    ip = request.client.host if request.client is not None else "desconhecido"
-    return estado.limite_ip.admitir(ip)
+    return estado.limite_ip.admitir(ip_do_cliente(request))
 
 
 class CORSConfigurado:
