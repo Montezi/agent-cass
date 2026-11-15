@@ -5,6 +5,7 @@ o Gemini usa a Vertex AI, autenticada por ADC, como no serviço.
 """
 
 import json
+import os
 import threading
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,10 +57,13 @@ def dados_da_bateria() -> Iterator[str]:
 def perguntar_na_bateria(
     monkeypatch: pytest.MonkeyPatch, dados_da_bateria: str,
 ) -> Iterator[Callable[..., tuple[RespostaAgente, list[RespostaCass]]]]:
+    # Permite comparar as duas variantes explicitamente, sem o .env sobrescrever
+    # DECIDER_ATIVO=true/false informado no comando da bateria.
+    modo_decider = os.environ.get("DECIDER_ATIVO", "false")
     for nome, valor in dotenv_values(RAIZ / ".env").items():
         if valor:
             monkeypatch.setenv(nome, valor)
-    monkeypatch.setenv("DECIDER_ATIVO", "false")
+    monkeypatch.setenv("DECIDER_ATIVO", modo_decider)
     monkeypatch.setenv("DADOS_BASE", f"{dados_da_bateria}/dados")
     monkeypatch.setenv("CLIMA_URL", f"{dados_da_bateria}/api/clima")
     ferramentas.limpar_cache()
@@ -102,7 +106,7 @@ def perguntar_na_bateria(
     ],
     ids=lambda valor: valor if isinstance(valor, str) else str(valor),
 )
-def test_apendice_e_com_decider_desligado(
+def test_apendice_e(
     perguntar_na_bateria: Callable,
     caso: str, pergunta: str, hotspot: str | None, idioma: str,
 ) -> None:

@@ -1,0 +1,79 @@
+{
+  "runtime": {
+    "pid": 624573,
+    "rss_bytes": 8332550144,
+    "created_at": 1794725090.56,
+    "elapsed": 64.23882746696472,
+    "cpu_times": [
+      99.23,
+      19.35,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "logical_cpu_count": 8,
+    "host": "Linux-7.0.0-42-generic-x86_64-with-glibc2.39",
+    "threads": 17,
+    "omp_num_threads": 4,
+    "mkl_num_threads": 4,
+    "openblas_num_threads": 1,
+    "health": {
+      "status": "ok",
+      "model": "216d1ccb46a9e9b036eb9187b248db98480f77d4",
+      "checkpoint": "/tmp/agent-cass-decider-cache/hub/models--StrandsAgents--strands-decider-2B-qwen3.5-v1-2610/snapshots/216d1ccb46a9e9b036eb9187b248db98480f77d4",
+      "base_model": "Qwen/Qwen3.5-2B-Base",
+      "max_length": 4096,
+      "temperature": 1.0545210242263665,
+      "device": "cpu",
+      "prefix_cache": true,
+      "vision": false
+    }
+  },
+  "downloads": {
+    "adapter_model": "StrandsAgents/strands-decider-2B-qwen3.5-v1-2610",
+    "adapter_revision": "216d1ccb46a9e9b036eb9187b248db98480f77d4",
+    "adapter_path": "/tmp/agent-cass-decider-cache/hub/models--StrandsAgents--strands-decider-2B-qwen3.5-v1-2610/snapshots/216d1ccb46a9e9b036eb9187b248db98480f77d4",
+    "base_model": "Qwen/Qwen3.5-2B-Base",
+    "base_revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "base_path": "/tmp/agent-cass-decider-cache/hub/models--Qwen--Qwen3.5-2B-Base/snapshots/b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "download_seconds": 98.21905040199636
+  },
+  "first-inference": {
+    "latency_seconds": 1.2936713930102997,
+    "answer": {
+      "model": "216d1ccb46a9e9b036eb9187b248db98480f77d4",
+      "answers": {
+        "q": {
+          "type": "noul",
+          "noul": 0.1368
+        }
+      },
+      "usage": {
+        "input_tokens": 98,
+        "output_tokens": 1
+      },
+      "latency_ms": 1291.89
+    }
+  },
+  "upstream_commit": "79bf6e7184c166990eec79034667cc0bfd445e12",
+  "versions": {
+    "torch": "2.7.1+cpu",
+    "transformers": "5.19.0",
+    "peft": "0.21.0",
+    "accelerate": "1.12.0",
+    "huggingface_hub": "2.4.0"
+  },
+  "container_build_executed": false,
+  "offline_artifact_preparation_verified": true,
+  "benchmark_caveat": "Primeira tentativa Gemini inválida: Event loop is closed em três casos por modo. Avaliador corrigido; repetição bloqueada por limite da revisão automática."
+}

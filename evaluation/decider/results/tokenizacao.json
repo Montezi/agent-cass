@@ -1,0 +1,9 @@
+{
+  "items": 36,
+  "invalid_rows": 0,
+  "max_tokens": 95,
+  "context_window": 4096,
+  "over_window": 0,
+  "base_revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+  "note": "Verificação posterior ao primeiro ensaio, sem alteração de linhas ou hashes."
+}

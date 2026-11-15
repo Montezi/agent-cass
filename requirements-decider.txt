@@ -1,0 +1,10 @@
+# Variante opcional com CPU. Instale torch pelo índice CPU antes deste arquivo:
+# pip install --index-url https://download.pytorch.org/whl/cpu torch==2.7.1+cpu
+torch==2.7.1+cpu
+# O release PyPI 0.3.0 ainda não oferece --max-concurrency; fixamos a fonte auditada.
+strands-decider @ https://github.com/strands-labs/strands-decider/archive/79bf6e7184c166990eec79034667cc0bfd445e12.tar.gz
+# O upstream testa esta combinação; transformers 5.20 exige APIs ausentes no torch 2.7.
+transformers==5.19.0
+peft==0.21.0
+accelerate==1.12.0
+huggingface-hub==2.4.0

@@ -1,0 +1,22 @@
+{
+  "kind": "pilot_synthetic_not_audited",
+  "dataset": "evaluation/decider-cass-runtime.jsonl",
+  "dataset_sha256": "72c2003b267f82f83b2297f5848fb024762274aec89cc32da8fa0cef62e7c219",
+  "items": 36,
+  "metadata": "evaluation/decider/keys-runtime.jsonl",
+  "metadata_sha256": "43f83b36375d1434aa710d57db4dbdf7423e065153003125c0b338b85d9ec638",
+  "upstream_skill_commit": "79bf6e7184c166990eec79034667cc0bfd445e12",
+  "model_requested": "StrandsAgents/strands-decider-2B-qwen3.5-v1-2610",
+  "label_audit": "not_done",
+  "tokenizer_row_check": "passed_post_pilot_no_dataset_changes",
+  "calibration_or_training": "not_done",
+  "production_thresholds_changed": false,
+  "format_version": "runtime-exato-v2",
+  "previous_pilot": {
+    "dataset": "evaluation/decider-cass.jsonl",
+    "sha256": "0ef9a0e67558a7ab6aa7e5e9d76debc1202dc5e95dfe07d02fe4b93d58b68f90",
+    "measured": false,
+    "reason": "Candidato/nome no state não existia no runtime; mantido só como proveniência, sem avaliação."
+  },
+  "tokenizer_row_check_evidence": "evaluation/decider/results/tokenizacao.json"
+}

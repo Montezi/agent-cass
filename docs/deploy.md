@@ -1,12 +1,13 @@
-# Deploy do Cass no Cloud Run (passo 10)
+# Deploy do Cass no Cloud Run
 
 Serviço público para o frontend, com Strands e Gemini na Vertex AI. A imagem usa
 `python:3.12-slim` e inclui somente runtime, `cass/`, `skills/` e `start.sh`.
-O Decider fica desligado: não há PyTorch nem download de modelo local.
+Na variante padrão, o Decider fica desligado: não há PyTorch nem download de
+modelo local. Os comandos de Cloud Run abaixo continuam usando essa variante.
 
-`INCLUIR_DECIDER=false` é o argumento de build reservado para o passo 11. Nesta
-fase, outro valor interrompe o build, pois essa variante ainda não existe. O
-Dockerfile também confere que PyTorch não foi instalado. As versões das
+`INCLUIR_DECIDER=false` produz a imagem leve; `true` acrescenta PyTorch CPU, o
+servidor e os pesos fixados do Decider. O Dockerfile confere que PyTorch não foi
+instalado na variante leve e que a variante com modelo não tem CUDA. As versões das
 dependências diretas de runtime foram conferidas no `.venv`; testes ficam em
 `requirements-dev.txt` e não são instalados na imagem.
 
@@ -20,7 +21,7 @@ Google Cloud CLI autenticado e projeto com faturamento habilitado. O deploy por
 ```bash
 PROJECT_ID="seu-projeto"
 REGIAO="us-central1"               # região do serviço Cloud Run
-SERVICO="agent-cass"
+SERVICO="agente"                    # nome esperado pelo rewrite do frontend
 CONTA="cass-agente@${PROJECT_ID}.iam.gserviceaccount.com"
 GOOGLE_CLOUD_LOCATION="global"    # localização do Gemini na Vertex AI
 GEMINI_MODEL="gemini-3.8-flash"
@@ -37,6 +38,9 @@ gcloud config set project "$PROJECT_ID"
 No Cloud Shell, a autenticação costuma já estar configurada. Para atualizar o
 ensaio privado, use a região do serviço existente. `APP_ORIGIN` contém somente
 a origem do frontend, sem caminho ou barra final.
+O frontend existente encaminha `/api/agente` para o serviço `agente`; se publicar
+com outro nome, ajuste o rewrite em conjunto. Serviços de ensaios anteriores
+podem ter nomes diferentes. Ver [`fluxo-de-dados.md`](fluxo-de-dados.md).
 
 ## 2. Ativar as APIs
 
@@ -110,7 +114,10 @@ gcloud run deploy "$SERVICO" \
   --source . \
   --region "$REGIAO" \
   --service-account "$CONTA" \
-  --memory=2Gi \
+  --memory=8Gi \
+  --cpu=4 \
+  --no-cpu-throttling \
+  --cpu-boost \
   --max-instances=2 \
   --timeout=60 \
   --allow-unauthenticated \
@@ -252,3 +259,109 @@ curl -fsS -X POST http://localhost:8082/api/agente \
   -H 'Content-Type: application/json' \
   --data '{"question":"O que mudou no Guaíba?","hotspot_id":"guaiba-rs","language":"pt"}'
 ```
+
+## Variante opcional com Decider CPU (passo 11)
+
+```bash
+docker build --build-arg INCLUIR_DECIDER=true -t agent-cass:decider .
+
+docker run --rm --entrypoint python agent-cass:decider \
+  -c "import torch; assert torch.version.cuda is None; print(torch.__version__)"
+
+# Configuração mínima para conferir a inicialização; /health não chama Gemini.
+docker run --rm --name agent-cass-decider -p 8080:8080 \
+  -e GOOGLE_CLOUD_PROJECT=projeto-teste \
+  -e DECIDER_ATIVO=true \
+  agent-cass:decider
+```
+
+O build instala `torch==2.7.1+cpu` pelo índice oficial CPU e as dependências de
+[`requirements-decider.txt`](../requirements-decider.txt). O servidor vem do
+commit `79bf6e7184c166990eec79034667cc0bfd445e12`: o release PyPI 0.3.0 não tem a
+opção `--max-concurrency` usada para limitar a inferência.
+
+[`scripts/baixar_modelo_decider.py`](../scripts/baixar_modelo_decider.py) baixa
+`StrandsAgents/strands-decider-2B-qwen3.5-v1-2610` na revisão
+`216d1ccb46a9e9b036eb9187b248db98480f77d4`. Esse checkpoint contém LoRA e head;
+o build também baixa `Qwen/Qwen3.5-2B-Base` na revisão
+`b1485b2fa6dfa1287294f269f5fb618e03d52d7c`. O manifesto fica em
+`/opt/decider-manifest.json`, com cache em `/opt/decider-cache` e checkpoint local
+em `/opt/decider-model`. O processo de inferência usa os arquivos offline.
+
+A imagem com modelo ativa o Decider por padrão. `DECIDER_ATIVO=false` permite
+rodar essa mesma imagem sem carregar os pesos. Ativar o Decider numa imagem leve
+interrompe a subida com uma mensagem de configuração inválida.
+
+Com o Decider ativo, `start.sh` executa o supervisor `cass.inicializacao`, que:
+
+1. Inicia o Decider em `127.0.0.1:8099`, CPU, lote e concorrência de inferência 1.
+2. Aguarda `/health` confirmar o checkpoint esperado e dispositivo CPU.
+3. Inicia `uvicorn cass.main:app --host 0.0.0.0 --port ${PORT:-8080}`.
+4. Encaminha sinais aos dois processos e encerra ambos se um deles terminar.
+
+Os prazos padrão são `DECIDER_STARTUP_TIMEOUT_S=240` e
+`DECIDER_SHUTDOWN_TIMEOUT_S=10`. `DECIDER_URL` permanece
+`http://127.0.0.1:8099/v1/systemone`; a porta interna não precisa ser publicada.
+
+O deploy usa os parâmetros solicitados: `--memory=8Gi --cpu=4
+--no-cpu-throttling --cpu-boost`. O ensaio local CPU observou RSS de 7,76 GiB e
+aquecimento de 23,5 s, antes da bateria. O consumo total inclui também o Cass;
+esses 8 GiB precisam ser validados com os dois processos e requisições reais.
+Os 2 GiB previstos no passo anterior eram apenas para a variante leve.
+Este passo não publicou serviços nem contratou infraestrutura. Consulte os resultados e limitações em
+[`avaliacao-decider.md`](avaliacao-decider.md).
+
+### Construir a variante no Cloud Build
+
+O `--source .` anterior usa o argumento padrão `false` do Dockerfile. Para
+construir a variante `true` sem Docker local, use uma configuração explícita do
+Cloud Build. Crie o repositório uma vez, com uma conta autorizada a criá-lo, e
+garanta que a conta de build tenha permissão de escrita nele:
+
+```bash
+REPOSITORIO="cass-imagens"
+TAG="decider-$(date +%Y%m%d-%H%M%S)"
+IMAGEM="${REGIAO}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORIO}/agent-cass:${TAG}"
+
+gcloud artifacts repositories create "$REPOSITORIO" \
+  --project "$PROJECT_ID" --location "$REGIAO" --repository-format=docker
+
+cat > /tmp/cloudbuild-cass-decider.yaml <<YAML
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '--build-arg', 'INCLUIR_DECIDER=true', '-t', '${IMAGEM}', '.']
+images: ['${IMAGEM}']
+timeout: 1800s
+YAML
+
+gcloud builds submit . --project "$PROJECT_ID" --region "$REGIAO" \
+  --config=/tmp/cloudbuild-cass-decider.yaml
+```
+
+A construção não promove a imagem. Depois de validar a imagem e repetir a
+bateria, ela pode ser publicada com o Decider ainda desligado:
+
+```bash
+gcloud run deploy "$SERVICO" \
+  --project "$PROJECT_ID" --region "$REGIAO" \
+  --image "$IMAGEM" --service-account "$CONTA" \
+  --memory=8Gi --cpu=4 --no-cpu-throttling --cpu-boost \
+  --concurrency=1 --max-instances=2 --timeout=60 \
+  --allow-unauthenticated \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GEMINI_MODEL=${GEMINI_MODEL},APP_ORIGIN=${APP_ORIGIN},DADOS_BASE=${DADOS_BASE},CLIMA_URL=${CLIMA_URL},DECIDER_ATIVO=false,DECIDER_URL=http://127.0.0.1:8099/v1/systemone"
+```
+
+**Critério de ativação:** a bateria com Decider deve ficar igual ou melhor que
+a variante desligada e a latência deve caber nos prazos do Cass (1,5 s por consulta
+ao Decider e 20 s para a pergunta completa). Enquanto isso não for demonstrado,
+mantenha `DECIDER_ATIVO=false` em produção. O piloto atual não satisfaz esse
+critério. Só depois da validação, altere a variável para `true` numa nova revisão,
+guardando a revisão anterior conforme o procedimento de rollback acima.
+[Referência dos parâmetros do Cloud Run](https://docs.cloud.google.com/sdk/gcloud/reference/run/deploy),
+[build de containers](https://docs.cloud.google.com/build/docs/building/build-containers).
+
+O host desta avaliação não tem Docker: foram verificados dependências CPU,
+checkpoints e servidor reais em ambiente Python separado, mas os comandos de
+build e execução da imagem acima ainda precisam ser executados num host com
+Docker. A bateria completa também precisa ser repetida após a correção do
+avaliador registrada no relatório.
