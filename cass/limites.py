@@ -1,6 +1,6 @@
 """Limite local por IP e CORS a partir da configuração carregada na subida."""
 
-import ipaddress
+import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -70,26 +70,17 @@ class LimitadorPorIP:
 
 
 def ip_do_cliente(request: Request) -> str:
-    """Primeiro endereço do X-Forwarded-For; sem ele, o cliente da conexão.
+    """Usa o peer do servidor, nunca um cabeçalho fornecido pelo solicitante.
 
-    No Cloud Run, request.client.host é o proxy do Google, e quem chamou vem no
-    X-Forwarded-For ("cliente, proxy, ..."). Esse cabeçalho pode ser falsificado:
-    quem chama pode mandar o próprio, e o primeiro endereço vira o que ele quiser.
-    O limite por IP só freia o uso casual; o teto de custo real é o --max-instances
-    do Cloud Run. Um primeiro item que não seja IP cai no client.host, para lixo
-    forjado não virar chave do limitador.
+    start.sh desabilita a interpretação automática de proxy headers do uvicorn.
+    Atrás de proxy a cota pode ser compartilhada: só habilitar identidade
+    encaminhada depois de validar toda a cadeia de proxies da publicação.
     """
-    primeiro = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    if primeiro:
-        try:
-            return str(ipaddress.ip_address(primeiro))
-        except ValueError:
-            pass
     return request.client.host if request.client is not None else "desconhecido"
 
 
 def verificar_limite_ip(request: Request) -> int | None:
-    """Compartilha a cota JSON/SSE por ip_do_cliente (ver o aviso sobre falsificação)."""
+    """Compartilha a cota JSON/SSE pelo peer do servidor."""
     estado = request.app.state
     config = estado.config
     if getattr(estado, "limite_ip_config", None) is not config:
@@ -112,10 +103,12 @@ class LimiteDeCorpo:
         app: ASGIApp,
         max_bytes: int = MAX_BYTES_DO_PEDIDO,
         rotas: frozenset[str] = ROTAS_COM_LIMITE_DE_CORPO,
+        timeout_s: float = 5.0,
     ) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.rotas = rotas
+        self.timeout_s = timeout_s
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] not in self.rotas:
@@ -126,16 +119,24 @@ class LimiteDeCorpo:
             await self._recusar(scope, receive, send)
             return
         corpo = bytearray()
-        while True:
-            mensagem = await receive()
-            if mensagem["type"] == "http.disconnect":
-                return  # o cliente foi embora antes de mandar o corpo
-            corpo += mensagem.get("body", b"")
-            if len(corpo) > self.max_bytes:
-                await self._recusar(scope, receive, send)
-                return
-            if not mensagem.get("more_body", False):
-                break
+        try:
+            async with asyncio.timeout(self.timeout_s):
+                while True:
+                    mensagem = await receive()
+                    if mensagem["type"] == "http.disconnect":
+                        return
+                    pedaco = mensagem.get("body", b"")
+                    if len(corpo) + len(pedaco) > self.max_bytes:
+                        await self._recusar(scope, receive, send)
+                        return
+                    corpo += pedaco
+                    if not mensagem.get("more_body", False):
+                        break
+        except TimeoutError:
+            await JSONResponse(status_code=408, content={
+                "detail": "prazo de leitura do pedido excedido",
+            })(scope, receive, send)
+            return
 
         entregue = False
 

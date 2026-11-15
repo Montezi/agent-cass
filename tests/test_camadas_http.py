@@ -161,29 +161,16 @@ def test_limite_e_aplicado_antes_da_entrada_inclusive_para_fora_do_escopo(
     assert chamadas == []
 
 
-def test_cota_segue_o_primeiro_endereco_do_x_forwarded_for(cliente: TestClient) -> None:
-    # No Cloud Run: "cliente, proxy do Google". O proxy pode variar; o cliente não.
+def test_x_forwarded_for_falsificado_nao_ganha_cota_nova(cliente: TestClient) -> None:
     for numero in range(10):
-        resposta = cliente.post(
-            "/api/agente", json=PEDIDO, headers={"X-Forwarded-For": f"203.0.113.7, 10.0.0.{numero}"}
-        )
-        assert resposta.status_code == 200
-
-    mesmo_cliente = cliente.post("/api/agente", json=PEDIDO, headers={"X-Forwarded-For": "203.0.113.7"})
-    outro_cliente = cliente.post("/api/agente", json=PEDIDO, headers={"X-Forwarded-For": "203.0.113.8"})
-
-    assert mesmo_cliente.status_code == 429
-    assert outro_cliente.status_code == 200
-
-
-def test_x_forwarded_for_falsificado_ganha_cota_nova(cliente: TestClient) -> None:
-    # Limitação conhecida e documentada: o cabeçalho vem de quem chama. O teto de
-    # custo real é o --max-instances do Cloud Run, não este limite.
-    for numero in range(12):
-        resposta = cliente.post(
-            "/api/agente", json=PEDIDO, headers={"X-Forwarded-For": f"198.51.100.{numero}"}
-        )
-        assert resposta.status_code == 200
+        assert cliente.post(
+            "/api/agente", json=PEDIDO,
+            headers={"X-Forwarded-For": f"198.51.100.{numero}"},
+        ).status_code == 200
+    assert cliente.post(
+        "/api/agente/stream", json=PEDIDO,
+        headers={"X-Forwarded-For": "203.0.113.200"},
+    ).status_code == 429
 
 
 def requisicao_com(cabecalhos: dict[str, str], cliente: str | None = "10.1.2.3") -> Request:
@@ -198,9 +185,9 @@ def requisicao_com(cabecalhos: dict[str, str], cliente: str | None = "10.1.2.3")
     ("cabecalhos", "esperado"),
     [
         pytest.param({}, "10.1.2.3", id="sem-cabecalho"),
-        pytest.param({"X-Forwarded-For": "203.0.113.7"}, "203.0.113.7", id="um-endereco"),
-        pytest.param({"X-Forwarded-For": "203.0.113.7, 34.1.2.3"}, "203.0.113.7", id="com-proxy"),
-        pytest.param({"X-Forwarded-For": " 2001:db8::1 ,34.1.2.3"}, "2001:db8::1", id="ipv6"),
+        pytest.param({"X-Forwarded-For": "203.0.113.7"}, "10.1.2.3", id="um-endereco"),
+        pytest.param({"X-Forwarded-For": "203.0.113.7, 34.1.2.3"}, "10.1.2.3", id="com-proxy"),
+        pytest.param({"X-Forwarded-For": " 2001:db8::1 ,34.1.2.3"}, "10.1.2.3", id="ipv6"),
         pytest.param({"X-Forwarded-For": ""}, "10.1.2.3", id="vazio"),
         pytest.param({"X-Forwarded-For": "lixo, 203.0.113.7"}, "10.1.2.3", id="primeiro-nao-e-ip"),
     ],

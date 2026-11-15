@@ -12,6 +12,7 @@ from typing import Annotated
 
 from anyio import CancelScope
 from fastapi import FastAPI, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
 
@@ -24,6 +25,7 @@ from cass.guardrails import avaliar_entrada
 from cass.hooks import EventoProgresso, ProgressoERegistro
 from cass.limites import CORSConfigurado, LimitadorPorIP, LimiteDeCorpo, verificar_limite_ip
 from cass.modelos import PADRAO_ID, PedidoAgente, PrevisaoClima, RespostaAgente, RespostaCass
+from cass.seguranca_http import Admissao, SegurancaHTTP
 from cass.verificacao import validar_resposta
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,8 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = carregar_config()
     app.state.limite_ip = LimitadorPorIP()
     app.state.limite_ip_config = app.state.config
+    app.state.admissao = Admissao()
+    app.state.admissao_config = app.state.config
     # Em segundo plano: o /health responde enquanto as previsões dos hotspots chegam.
     aquecimento = asyncio.create_task(_aquecer_previsoes())
     yield
@@ -57,7 +61,16 @@ app = FastAPI(title="agent-cass", lifespan=ciclo_de_vida)
 # O último registrado é o mais externo: o CORS envolve o limite de corpo, e a recusa
 # 413 também sai com os cabeçalhos de origem.
 app.add_middleware(LimiteDeCorpo)
+app.add_middleware(SegurancaHTTP)
 app.add_middleware(CORSConfigurado)
+
+
+@app.exception_handler(RequestValidationError)
+async def pedido_invalido(request: Request, erro: RequestValidationError) -> JSONResponse:
+    # Não reflete entradas/ctx arbitrários nem Unicode inválido no JSON de erro.
+    detalhes = [{"type": e["type"], "loc": e["loc"],
+                 "msg": "Valor inválido para este campo."} for e in erro.errors()]
+    return JSONResponse(status_code=422, content={"detail": detalhes})
 
 
 @app.get("/health")
@@ -113,18 +126,19 @@ def _erro_de_consulta(tipo: str, campo: str, msg: str, ctx: dict | None = None) 
 async def api_agente(pedido: PedidoAgente, request: Request) -> RespostaAgente | JSONResponse:
     if (recusa := _limitar_ip(pedido, request)) is not None:
         return recusa
-    pedido, recusa = await _conferir_hotspot(pedido)
-    if recusa is not None:
-        return recusa
     # Pelo contrato, 500 e 504 levam o app ao estado de erro com "perguntar de novo".
     try:
-        resposta, ferramentas = await _responder_protegido(pedido, request.app.state.config)
-        return para_contrato(resposta, ferramentas)
-    except AgenteDemorou:
+        async with asyncio.timeout(TEMPO_LIMITE_S):
+            pedido, recusa = await _conferir_hotspot(pedido)
+            if recusa is not None:
+                return recusa
+            resposta, ferramentas = await _responder_protegido(pedido, request.app.state.config)
+            return para_contrato(resposta, ferramentas)
+    except (AgenteDemorou, TimeoutError):
         logger.warning("o agente passou do tempo limite")
         return _erro(504, pedido)
-    except Exception:
-        logger.exception("o agente falhou")
+    except Exception as erro:
+        logger.error("o agente falhou: %s", type(erro).__name__)
         return _erro(500, pedido)
 
 
@@ -230,14 +244,22 @@ async def api_agente_stream(
     if (recusa := _limitar_ip(pedido, request)) is not None:
         return recusa
     # Antes de abrir o stream, para a recusa sair com o status certo.
-    pedido, recusa = await _conferir_hotspot(pedido)
-    if recusa is not None:
-        return recusa
-    return _RespostaSSE(_eventos_agente(pedido, request.app.state.config))
+    prazo = asyncio.get_running_loop().time() + TEMPO_LIMITE_S
+    try:
+        async with asyncio.timeout_at(prazo):
+            pedido, recusa = await _conferir_hotspot(pedido)
+            if recusa is not None:
+                return recusa
+    except TimeoutError:
+        return _erro(504, pedido)
+    except Exception as erro:
+        logger.error("falha ao conferir hotspot: %s", type(erro).__name__)
+        return _erro(500, pedido)
+    return _RespostaSSE(_eventos_agente(pedido, request.app.state.config, prazo=prazo))
 
 
 async def _eventos_agente(
-    pedido: PedidoAgente, config: Configuracao
+    pedido: PedidoAgente, config: Configuracao, prazo: float | None = None,
 ) -> AsyncGenerator[str, None]:
     """Envia o progresso em ordem e uma única resposta ou erro terminal."""
     fila: asyncio.Queue[EventoProgresso | None] = asyncio.Queue()
@@ -245,16 +267,17 @@ async def _eventos_agente(
 
     async def produzir() -> None:
         try:
-            resposta, ferramentas = await _responder_protegido(pedido, config, progresso=progresso)
-            corpo = para_contrato(resposta, ferramentas).model_dump()
-            fila.put_nowait(("resposta", corpo))
-        except AgenteDemorou:
+            async with asyncio.timeout_at(prazo):
+                resposta, ferramentas = await _responder_protegido(pedido, config, progresso=progresso)
+                corpo = para_contrato(resposta, ferramentas).model_dump()
+                fila.put_nowait(("resposta", corpo))
+        except (AgenteDemorou, TimeoutError):
             logger.warning("o agente passou do tempo limite no stream")
             fila.put_nowait(
                 ("erro", {"status": 504, "response": resposta_de_erro(pedido.language).model_dump()})
             )
-        except Exception:
-            logger.exception("o agente falhou no stream")
+        except Exception as erro:
+            logger.error("o agente falhou no stream: %s", type(erro).__name__)
             fila.put_nowait(
                 ("erro", {"status": 500, "response": resposta_de_erro(pedido.language).model_dump()})
             )

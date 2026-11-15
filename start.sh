@@ -8,4 +8,4 @@ case "$decider_ativo" in
     ;;
 esac
 # exec entrega os sinais de encerramento do Cloud Run diretamente ao uvicorn.
-exec uvicorn cass.main:app --host 0.0.0.0 --port "${PORT:-8080}"
+exec uvicorn cass.main:app --host 0.0.0.0 --port "${PORT:-8080}" --no-proxy-headers

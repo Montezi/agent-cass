@@ -166,7 +166,7 @@ def test_uvicorn_so_inicia_apos_health_cpu_com_modelo_correto(rodar: Callable) -
     assert decider["offline"] == decider["transformers_offline"] == "1"
     assert decider["hf_home"] == "/cache-de-teste"
     cass = next(e for e in registrados if e["evento"] == "cass-iniciou")
-    assert cass["args"] == ["cass.main:app", "--host", "0.0.0.0", "--port", "9191"]
+    assert cass["args"] == ["cass.main:app", "--host", "0.0.0.0", "--port", "9191", "--no-proxy-headers"]
     assert "decider-sinal" in nomes
 
 

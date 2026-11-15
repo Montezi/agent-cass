@@ -81,7 +81,7 @@ def test_stream_termina_no_mesmo_contrato_do_json(
 
     assert stream.status_code == normal.status_code == 200
     assert stream.headers["content-type"] == "text/event-stream; charset=utf-8"
-    assert stream.headers["cache-control"] == "no-cache"
+    assert stream.headers["cache-control"] == "no-store"
     assert stream.headers["x-accel-buffering"] == "no"
     assert _eventos(stream.text) == [
         ("pensando", {}),

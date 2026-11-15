@@ -143,7 +143,7 @@ def main() -> int:
             return _codigo_saida(codigo)
         porta = os.environ.get("PORT", "").strip() or "8080"
         cass = subprocess.Popen(
-            ["uvicorn", "cass.main:app", "--host", "0.0.0.0", "--port", porta],
+            ["uvicorn", "cass.main:app", "--host", "0.0.0.0", "--port", porta, "--no-proxy-headers"],
             start_new_session=True,
         )
         processos.append(cass)

@@ -253,6 +253,19 @@ class PedidoAgente(BaseModel):
     hotspot_id: Annotated[str, Field(pattern=PADRAO_ID, max_length=64)] | None = None
     language: Literal["pt", "en"]
 
+    @field_validator("question")
+    @classmethod
+    def _pergunta_valida(cls, texto: str) -> str:
+        if not texto.strip():
+            raise ValueError("a pergunta precisa conter texto")
+        try:
+            texto.encode("utf-8")
+        except UnicodeEncodeError as erro:
+            raise ValueError("a pergunta contém Unicode inválido") from erro
+        if tamanho_js(texto) > MAX_CARACTERES_PERGUNTA:
+            raise ValueError("a pergunta passa de 500 unidades UTF-16")
+        return texto
+
 
 # Limites do agentAnswerSchema (e do api-contract.md do frontend): uma resposta maior
 # conta como fora do contrato e o app cai no modo demo.

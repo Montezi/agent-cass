@@ -45,7 +45,7 @@ def test_start_encaminha_porta_argumentos_pid_e_codigo_de_saida(
     assert processo.returncode == 37
     # O exec mantém o PID do entrypoint, em vez de deixar um shell intermediário.
     assert linhas[0] == str(processo.pid)
-    assert linhas[1:] == ["cass.main:app", "--host", "0.0.0.0", "--port", esperada]
+    assert linhas[1:] == ["cass.main:app", "--host", "0.0.0.0", "--port", esperada, "--no-proxy-headers"]
 
 
 @pytest.mark.parametrize("ativo", ["true", " TRUE ", "1", "Sim", "yes"])
