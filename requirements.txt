@@ -1,3 +1,5 @@
+# Dependências diretas de runtime, com as versões conferidas no .venv (Python 3.12).
+# Ferramentas de teste ficam em requirements-dev.txt; Decider só no passo 11.
 strands-agents[gemini]==1.65.0
 google-genai==2.34.0
 fastapi==0.163.0

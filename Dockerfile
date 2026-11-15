@@ -2,16 +2,23 @@
 # Sem o Strands Decider (passo 11): nada de PyTorch nem modelo local na imagem.
 FROM python:3.12-slim
 
+# Reservado para o passo 11. Esta imagem ainda não oferece a variante com Decider.
+ARG INCLUIR_DECIDER=false
+RUN test "$INCLUIR_DECIDER" = "false" || \
+    { echo "INCLUIR_DECIDER=true será implementado no passo 11." >&2; exit 1; }
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DECIDER_ATIVO=false
 
 WORKDIR /app
 
 # Dependências primeiro: a camada fica em cache enquanto o requirements.txt não muda.
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt \
+    && python -c "from importlib.util import find_spec; assert find_spec('torch') is None, 'PyTorch não faz parte desta imagem'"
 
 # Só o que o serviço precisa. Nada de .env: os segredos vêm do ambiente do Cloud Run.
 COPY cass/ cass/

@@ -4,6 +4,9 @@
 .gcloudignore
 .git/
 .claude/
+.codex/
+.agents/
+.aws/
 .mcp.json
 tests/
 docs/

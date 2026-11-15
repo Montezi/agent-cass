@@ -5,6 +5,9 @@
 .venv/
 .git/
 .claude/
+.codex/
+.agents/
+.aws/
 .mcp.json
 __pycache__/
 *.pyc
