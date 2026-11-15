@@ -273,6 +273,38 @@ def test_consultar_hotspot_sem_baseline_pass_mostra_null(rota: respx.Route) -> N
     assert hotspot["baseline_pass"] is None and hotspot["threshold_db"] is None
 
 
+def test_inteiros_guardados_como_float_voltam_como_int(respx_mock: respx.MockRouter) -> None:
+    # O Pydantic guarda número como float: sem isto o modelo leria "212.0" e "3.0".
+    respx_mock.get(URL).mock(return_value=httpx.Response(200, json=fixture_com(
+        affected_area_km2=212, threshold_db=3.0, confidence=0.86, last_pass="2026-11-12",
+    )))
+
+    hotspot = consultar_hotspot("guaiba-rs")["hotspot"]
+    texto = json.dumps(consultar_hotspot("guaiba-rs"))
+
+    assert hotspot["affected_area_km2"] == 212 and type(hotspot["affected_area_km2"]) is int
+    assert hotspot["threshold_db"] == 3 and type(hotspot["threshold_db"]) is int
+    assert hotspot["confidence"] == 0.86 and type(hotspot["confidence"]) is float
+    assert hotspot["bbox"] == [-51.35, -30.25, -51, -29.85]
+    assert [type(v) for v in hotspot["bbox"]] == [float, float, int, float]
+    assert "212.0" not in texto and "3.0" not in texto and "-51.0" not in texto
+    assert consultar_hotspot("guaiba-rs")["dados_de_exemplo"] is True
+
+
+def test_alerta_e_previsao_tambem_devolvem_inteiros_como_int(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(URL).mock(return_value=httpx.Response(200, json=fixture_com(affected_area_km2=212.0)))
+    respx_mock.get(url__startswith="https://api.open-meteo.com").mock(return_value=httpx.Response(200, json={
+        "daily_units": {"precipitation_sum": "mm"},
+        "daily": {"time": ["2026-11-15", "2026-11-16"], "precipitation_sum": [18.0, 4.5]},
+    }))
+    respx_mock.get(url__startswith="https://api.meteomatics.com").mock(return_value=httpx.Response(500))
+
+    dias = previsao_tempo("guaiba-rs", 2)["dias"]
+
+    assert [(d["precipitation_mm"], type(d["precipitation_mm"])) for d in dias] == [(18, int), (4.5, float)]
+    assert "212.0" not in json.dumps(rascunhar_alerta("guaiba-rs"))
+
+
 # ---------- explicar_classe, hipotese, exposicao: sem stats ainda ----------
 
 

@@ -123,8 +123,9 @@ def _numero_localizado(texto: str, idioma: Idioma) -> Decimal | None:
     mantissa = partes[0]
     expoente = f"e{partes[1]}" if len(partes) == 2 else ""
     decimal, milhar = (",", ".") if idioma == "pt" else (".", ",")
-    if idioma == "pt" and re.fullmatch(r"[-+]?0\.[0-9]+", mantissa):
-        # "0.86": em PT, nenhum milhar começa com 0, então o ponto só pode ser decimal.
+    if idioma == "pt" and re.fullmatch(r"[-+]?(?:0\.[0-9]+|[0-9]+\.(?![0-9]{3}$)[0-9]+)", mantissa):
+        # Um único ponto só é milhar com exatamente 3 dígitos depois ("2.500") e sem
+        # 0 antes: "0.86", "212.0", "3.0" e "1.5" só podem ser decimais.
         decimal, milhar = ".", ","
     if mantissa.count(decimal) > 1:
         return None

@@ -85,11 +85,26 @@ def _erros_como_dado(funcao: Callable[P, dict[str, Any]]) -> Callable[P, dict[st
     @wraps(funcao)
     def envolvida(*args: P.args, **kwargs: P.kwargs) -> dict[str, Any]:
         try:
-            return funcao(*args, **kwargs)
+            return _inteiros_como_int(funcao(*args, **kwargs))
         except _Recusa as recusa:
             return recusa.dados
 
     return envolvida
+
+
+def _inteiros_como_int(valor: Any) -> Any:
+    """Cópia com cada float inteiro como int (212.0 -> 212); 0.86 fica como está.
+
+    O Pydantic guarda os números do contrato como float. Sem isto o modelo leria
+    "212.0" no JSON e repetiria "212.0 km²" na resposta.
+    """
+    if isinstance(valor, float) and valor.is_integer():
+        return int(valor)
+    if isinstance(valor, dict):
+        return {chave: _inteiros_como_int(v) for chave, v in valor.items()}
+    if isinstance(valor, (list, tuple)):
+        return [_inteiros_como_int(v) for v in valor]
+    return valor
 
 
 # ---------- leitura com cache ----------

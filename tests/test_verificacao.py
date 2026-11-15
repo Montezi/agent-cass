@@ -566,7 +566,10 @@ def test_pt_aceita_ponto_decimal_quando_comeca_com_zero(texto: str, dado: dict) 
 
 def test_pt_com_ponto_fora_do_zero_continua_sendo_milhar() -> None:
     assert numeros_confirmados(resposta("Área de 2.500 km²."), dados({"affected_area_km2": 2500}))
-    assert not numeros_confirmados(resposta("Área de 1.5 km²."), dados({"affected_area_km2": 1.5}))
+    assert numeros_confirmados(resposta("Área de 1.234 km²."), dados({"affected_area_km2": 1234}))
+    assert not numeros_confirmados(resposta("Área de 1.234 km²."), dados({"affected_area_km2": 1.234}))
+    assert not numeros_confirmados(resposta("Área de 1.2.5 km²."), dados({"affected_area_km2": 1.25}))
+    assert not numeros_confirmados(resposta("Área de 1234.567 km²."), dados({"affected_area_km2": 1234.567}))
     assert not numeros_confirmados(resposta("Área de 0.860 km²."), dados({"affected_area_km2": 860}))
     assert not numeros_confirmados(resposta("Confiança de 0.86."), dados({"confidence": 0.87}))
 
@@ -649,3 +652,29 @@ def test_basta_citar_a_area_de_um_dos_hotspots() -> None:
     ]
 
     assert cita_area_afetada(resposta("Em Kariba, 50 km²."), resultados)
+
+
+# ---------- PT: um único ponto sem 3 dígitos depois é decimal ----------
+
+
+@pytest.mark.parametrize("area", [212, 212.0])
+def test_casos_do_log_212_0_km2_e_3_0_db_em_pt_passam(area: float) -> None:
+    resultados = [("consultar_hotspot", hotspot(affected_area_km2=area, threshold_db=3.0))]
+    r = resposta(
+        "O radar mediu mudança no Lago Guaíba.",
+        medido=["**212.0 km²** de cheia em 12 nov 2026.", "Limiar de **3.0 dB**."],
+    )
+
+    assert valores_nao_confirmados(r, resultados) == []
+    assert validar_resposta(r, resultados)
+    assert cita_area_afetada(r, resultados)
+
+
+@pytest.mark.parametrize(
+    ("texto", "valor"),
+    [("Área de 1.5 km².", 1.5), ("Área de 212.0 km².", 212), ("Área de 12.25 km².", 12.25),
+     ("Área de 2.5000 km².", 2.5), ("Variação de -3.0 dB.", -3)],
+)
+def test_pt_com_um_ponto_sem_tres_digitos_depois_e_decimal(texto: str, valor: float) -> None:
+    assert numeros_confirmados(resposta(texto, "pt"), dados({"medida": valor}))
+    assert not numeros_confirmados(resposta(texto, "pt"), dados({"medida": 999}))

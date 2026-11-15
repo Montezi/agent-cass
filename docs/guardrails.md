@@ -124,6 +124,11 @@ confiança em porcentagem. IDs, URLs, nomes de fontes, coordenadas, bbox, flags,
 erros e valores nulos não autorizam uma medição. A verificação compara valores;
 não constitui uma validação semântica completa de toda afirmação do modelo.
 
+As ferramentas devolvem ao modelo os inteiros como inteiros (`212`, não `212.0`),
+para ele não repetir "212.0 km²". Em PT, a verificação lê um número com um único
+ponto como decimal quando não há exatamente 3 dígitos depois dele (`212.0`, `3.0`,
+`1.5`) ou quando começa com `0.`; `2.500` continua sendo milhar.
+
 A verificação devolve cada número ou data sem apoio, com o campo onde apareceu
 (`texto`, `medido[0]`, `hipotese.evidencia`...), e os campos com causa afirmada.
 Uma recusa vira uma linha de aviso no log com o campo e o valor (em uma linha,
