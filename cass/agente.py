@@ -30,7 +30,7 @@ from cass.hooks import ProgressoERegistro
 from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
 from cass.steering import SteeringCass
-from cass.verificacao import Verificacao, resposta_segura
+from cass.verificacao import Verificacao, cita_area_afetada, resposta_segura, valores_confirmados
 
 logger = logging.getLogger(__name__)
 
@@ -278,10 +278,18 @@ async def responder(
                     dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
                 )
                 verificacao = validar(resposta, resultados) if validar is not None else Verificacao()
-                if verificacao:
+                # A correção costuma passar tirando os números. Se a área medida sumiu
+                # da resposta, vale mais a resposta montada pelo código.
+                sem_area = (
+                    tentativa == 1 and resposta.tipo == "resposta"
+                    and not cita_area_afetada(resposta, resultados)
+                )
+                if verificacao and not sem_area:
                     tipo = resposta.tipo
                     return resposta, usadas
                 if tentativa == 1:
+                    if sem_area and verificacao:
+                        logger.warning("resposta corrigida sem a área afetada; vale a resposta segura")
                     segura = resposta_segura(resposta, resultados)
                     tipo = segura.tipo
                     return segura, usadas
@@ -290,7 +298,7 @@ async def responder(
                 contexto_invocacao = resultado.invocation_context
                 # Mesmo Agent, portão, steering, fila e prazo: a repetição não
                 # concede novas consultas nem reinicia o limite de 20 segundos.
-                mensagem = _mensagem_de_correcao(verificacao)
+                mensagem = _mensagem_de_correcao(verificacao, resultados, pedido.language)
     except TimeoutError as e:
         raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
     finally:
@@ -298,10 +306,14 @@ async def responder(
         progresso.finalizar(tipo)
 
 
-def _mensagem_de_correcao(verificacao: Verificacao) -> str:
+def _mensagem_de_correcao(
+    verificacao: Verificacao, resultados: list[Resultado], idioma: Literal["pt", "en"]
+) -> str:
     """O que corrigir: cada valor sem apoio (sem repetir) e, se houver, a causa afirmada.
+    Depois, os valores do hotspot que devem ficar, no formato do idioma do pedido.
 
-    Os valores são trechos curtos de número ou data que o próprio modelo escreveu.
+    Os valores a remover são trechos curtos de número ou data que o próprio modelo
+    escreveu; os valores a manter vêm dos resultados das ferramentas.
     """
     valores = list(dict.fromkeys(n.valor for n in verificacao.nao_confirmados))
     itens = [
@@ -312,9 +324,18 @@ def _mensagem_de_correcao(verificacao: Verificacao) -> str:
         itens.append("- confira também os outros números e datas: use só valores consultados.")
     if verificacao.causais:
         itens.append("- trate a relação com o El Niño como hipótese, nunca como causa comprovada.")
+    confirmados = valores_confirmados(resultados, idioma)
+    separador = ", " if idioma == "pt" else "; "  # a data em inglês já tem vírgula
+    manter = [
+        "Mantenha os valores confirmados"
+        + (f" de {nome}" if len(confirmados) > 1 else "")
+        + f": {separador.join(valores)}."
+        for nome, valores in confirmados
+    ]
     return "\n".join([
         "Revise a resposta:",
         *itens,
+        *manter,
         "Se faltarem dados, diga isso sem inventar números. Responda no idioma do pedido.",
     ])
 

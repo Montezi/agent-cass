@@ -549,8 +549,7 @@ def _hotspots_dos_resultados(resultados: list[Resultado]) -> list[dict[str, Any]
 
 def _paragrafo_do_hotspot(p: dict[str, Any], idioma: Idioma) -> str:
     t = TEXTOS_SEGUROS[idioma]
-    nome = p.get("name", {}).get(idioma) if isinstance(p.get("name"), dict) else None
-    nome = nome if isinstance(nome, str) and nome.strip() else p["id"]
+    nome = _nome_do_hotspot(p, idioma)
     classe = p.get("dominant_class")
     classe = ROTULOS_DAS_CLASSES[idioma][classe].lower() if classe in ROTULOS_DAS_CLASSES[idioma] else None
     area, confianca = _medida(p.get("affected_area_km2")), _medida(p.get("confidence"))
@@ -574,6 +573,59 @@ def _paragrafo_do_hotspot(p: dict[str, Any], idioma: Idioma) -> str:
         nivel = alta if confianca >= 0.75 else media if confianca >= 0.5 else baixa
         partes.append(t["confianca"].format(pct=round(confianca * 100), nivel=nivel))
     return " ".join(partes) if partes else t["sem_medicao"].format(nome=nome)
+
+
+def _nome_do_hotspot(p: dict[str, Any], idioma: Idioma) -> str:
+    nome = p.get("name", {}).get(idioma) if isinstance(p.get("name"), dict) else None
+    return nome if isinstance(nome, str) and nome.strip() else p["id"]
+
+
+def valores_confirmados(resultados: list[Resultado], idioma: Idioma) -> list[tuple[str, list[str]]]:
+    """(nome, valores) de cada hotspot consultado, como a resposta deve citá-los: área
+    afetada, confiança, baseline_pass, last_pass e limiar. Pula o que é null e o
+    hotspot sem nenhum valor.
+    """
+    confirmados: list[tuple[str, list[str]]] = []
+    for p in _hotspots_dos_resultados(resultados)[:MAX_HOTSPOTS_NA_SEGURA]:
+        area, confianca = _medida(p.get("affected_area_km2")), _medida(p.get("confidence"))
+        limiar = _medida(p.get("threshold_db"))
+        valores = [
+            f"{formatar_numero(area, idioma)} km²" if area is not None else None,
+            f"{round(confianca * 100)}%" if confianca is not None and 0 <= confianca <= 1 else None,
+            _data_do_dado(p.get("baseline_pass"), idioma),
+            _data_do_dado(p.get("last_pass"), idioma),
+            f"{formatar_numero(limiar, idioma)} dB" if limiar is not None else None,
+        ]
+        valores = [v for v in valores if v is not None]
+        if valores:
+            confirmados.append((_nome_do_hotspot(p, idioma), valores))
+    return confirmados
+
+
+_KM2 = re.compile(
+    r"\s*\*{0,2}\s*(?:km²|km2|km\^2|km\*\*2|quil[ôo]metros?\s+quadrados?|square\s+kilomet(?:er|re)s?)",
+    re.IGNORECASE,
+)
+
+
+def cita_area_afetada(resposta: RespostaCass, resultados: list[Resultado]) -> bool:
+    """Algum campo publicado traz, em km², a área afetada de um hotspot consultado?
+
+    Verdadeiro também quando nenhuma área foi medida (null): não há o que citar.
+    """
+    areas: set[Decimal] = set()
+    for p in _hotspots_dos_resultados(resultados):
+        area = _medida(p.get("affected_area_km2"))
+        if area is not None:
+            areas.update({Decimal(str(area)), Decimal(formatar_numero(area, "en"))})
+    if not areas:
+        return True
+    for _, trecho in _textos_publicados(resposta):
+        texto = _mascarar(trecho, _datas_no_texto(trecho, resposta.idioma))
+        for m in _NUMERO.finditer(texto):
+            if _KM2.match(texto[m.end():]) and _numero_localizado(m[0], resposta.idioma) in areas:
+                return True
+    return False
 
 
 def _medida(valor: Any) -> float | None:

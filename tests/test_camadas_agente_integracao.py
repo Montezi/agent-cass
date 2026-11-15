@@ -179,6 +179,112 @@ def test_segunda_falha_responde_com_os_dados_consultados(
     assert validar_resposta(resposta, [("consultar_hotspot", medido)])
 
 
+def medido(**campos: Any) -> dict:
+    dados = deepcopy(DADOS)
+    dados["hotspot"].update(
+        name={"pt": "Lago Guaíba, RS", "en": "Guaíba Lake, RS (Brazil)"},
+        dominant_class="flood", confidence=0.86, baseline_pass="2026-01-14", threshold_db=3,
+    )
+    dados["hotspot"].update(campos)
+    return dados
+
+
+def corrigir(
+    monkeypatch: pytest.MonkeyPatch, saidas: list[dict], dados: dict, idioma: str = "pt",
+) -> tuple[Any, str]:
+    """Roda o pedido com as saídas dadas; devolve a resposta e a mensagem de correção."""
+    modelo = ModeloProgramado([[s] for s in saidas])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = dados
+    pedido = PEDIDO.model_copy(update={"language": idioma})
+    resposta, _ = asyncio.run(modulo_agente.responder(pedido, carregar_config(), validar=validar_resposta))
+    assert modelo.roteiro == []
+    textos = [b["text"] for m in modelo.recebidas[-1] if m["role"] == "user"
+              for b in m["content"] if "text" in b]
+    return resposta, textos[-1]
+
+
+@pytest.mark.parametrize(
+    ("idioma", "linha"),
+    [
+        ("pt", "Mantenha os valores confirmados: 212 km², 86%, 14 jan 2026, 12 nov 2026, 3 dB."),
+        ("en", "Mantenha os valores confirmados: 212 km²; 86%; Jan 14, 2026; Nov 12, 2026; 3 dB."),
+    ],
+)
+def test_correcao_lista_os_valores_confirmados_a_manter(
+    monkeypatch: pytest.MonkeyPatch, idioma: str, linha: str,
+) -> None:
+    _, correcao = corrigir(monkeypatch, [
+        saida("inventada", "Desde 2024 o radar mediu **999 km²**."),
+        saida("corrigida", "O radar mediu **212 km²**."),
+    ], medido(), idioma)
+
+    assert "o valor 999 não está nos resultados" in correcao
+    assert linha in correcao.splitlines()
+
+
+def test_correcao_sem_medicao_nao_pede_para_manter_nada(monkeypatch: pytest.MonkeyPatch) -> None:
+    sem_medicao = medido(affected_area_km2=None, confidence=None, last_pass=None,
+                         baseline_pass=None, threshold_db=None)
+
+    _, correcao = corrigir(monkeypatch, [
+        saida("inventada", "O radar mediu **999 km²**."),
+        saida("corrigida", "O radar ainda não tem medição."),
+    ], sem_medicao)
+
+    assert "Mantenha" not in correcao
+
+
+def test_correcao_que_some_com_a_area_vira_resposta_segura(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="cass.agente")
+
+    resposta, _ = corrigir(monkeypatch, [
+        saida("inventada", "O radar mediu **999 km²**."),
+        saida("corrigida-sem-area", "O radar mediu uma mudança de cheia no hotspot."),
+    ], medido())
+
+    assert resposta.texto.startswith(
+        "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **212 km²** de cheia em Lago Guaíba, RS."
+    )
+    assert resposta.confianca == "baixa"
+    assert any("sem a área afetada" in r.getMessage() for r in caplog.records)
+    assert not any("cheia no hotspot" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("saidas", "dados", "texto"),
+    [
+        # A correção cita a área: vale a resposta do modelo.
+        ([saida("inventada", "O radar mediu **999 km²**."), saida("com-area", "O radar mediu **212 km²**.")],
+         medido(), "O radar mediu **212 km²**."),
+        # A área é null nos resultados: não há o que citar.
+        ([saida("inventada", "O radar mediu **999 km²**."), saida("sem-area", "Ainda não há área medida.")],
+         medido(affected_area_km2=None), "Ainda não há área medida."),
+        # A regra só vale para a resposta corrigida.
+        ([saida("primeira", "A classe dominante é cheia.")], medido(), "A classe dominante é cheia."),
+    ],
+)
+def test_resposta_do_modelo_e_mantida_fora_do_caso_da_area(
+    monkeypatch: pytest.MonkeyPatch, saidas: list[dict], dados: dict, texto: str,
+) -> None:
+    resposta, _ = corrigir(monkeypatch, saidas, dados)
+
+    assert resposta.texto == texto
+
+
+def test_pergunta_de_volta_corrigida_nao_precisa_da_area(monkeypatch: pytest.MonkeyPatch) -> None:
+    pergunta = chamada(
+        "RespostaDoModelo", "pergunta", tipo="pergunta_de_volta", texto="Qual hotspot você quer ver?",
+        confianca="baixa", opcoes=["Lago Guaíba, RS"],
+    )
+
+    resposta, _ = corrigir(monkeypatch, [saida("inventada", "O radar mediu **999 km²**."), pergunta], medido())
+
+    assert resposta.tipo == "pergunta_de_volta"
+
+
 def test_sem_schema_valido_para_no_limite_e_endpoint_devolve_500(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], ids_conhecidos: list[str],
 ) -> None:
@@ -224,6 +330,8 @@ def test_numero_em_erro_de_ferramenta_nao_confirma_uma_medicao(
     ))
 
     assert modelo.roteiro == [] and len(modelo.recebidas) == 3
-    assert resposta.texto == "Não há dados suficientes para confirmar a área."
+    # A correção passou sem citar os 212 km² do hotspot aberto: vale a resposta segura.
+    assert resposta.texto.startswith("Na passagem de 12 nov 2026, o radar mediu **212 km²**")
+    assert "999" not in resposta.texto
     extraidos = modulo_agente._resultados_das_ferramentas(criados[0]["agente"].messages)
     assert extraidos == []

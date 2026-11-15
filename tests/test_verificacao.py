@@ -13,9 +13,11 @@ from cass.modelos import Fonte, Hipotese, RespostaCass
 from cass.verificacao import (
     NaoConfirmado,
     afirma_causalidade,
+    cita_area_afetada,
     numeros_confirmados,
     resposta_segura,
     validar_resposta,
+    valores_confirmados,
     valores_nao_confirmados,
 )
 
@@ -567,3 +569,83 @@ def test_pt_com_ponto_fora_do_zero_continua_sendo_milhar() -> None:
     assert not numeros_confirmados(resposta("Área de 1.5 km²."), dados({"affected_area_km2": 1.5}))
     assert not numeros_confirmados(resposta("Área de 0.860 km²."), dados({"affected_area_km2": 860}))
     assert not numeros_confirmados(resposta("Confiança de 0.86."), dados({"confidence": 0.87}))
+
+
+# ---------- valores confirmados do hotspot, para a mensagem de correção ----------
+
+
+def test_valores_confirmados_no_formato_de_cada_idioma() -> None:
+    resultados = [("consultar_hotspot", hotspot(affected_area_km2=412.5))]
+
+    assert valores_confirmados(resultados, "pt") == [
+        ("Lago Guaíba, RS", ["412,5 km²", "86%", "14 jan 2026", "12 nov 2026", "3 dB"]),
+    ]
+    assert valores_confirmados(resultados, "en") == [
+        ("Guaíba Lake, RS (Brazil)", ["412.5 km²", "86%", "Jan 14, 2026", "Nov 12, 2026", "3 dB"]),
+    ]
+
+
+def test_valores_confirmados_pulam_null_erros_e_repeticoes() -> None:
+    resultados = [
+        ("consultar_hotspot", {"erro": "hotspot desconhecido"}),
+        ("consultar_hotspot", hotspot(affected_area_km2=None, threshold_db=None)),
+        ("consultar_hotspot", hotspot()),
+        ("consultar_hotspot", hotspot(id="kariba", name={"pt": "Kariba", "en": "Kariba"},
+                                      affected_area_km2=None, confidence=None, last_pass=None,
+                                      baseline_pass=None, threshold_db=None)),
+    ]
+
+    assert valores_confirmados(resultados, "pt") == [
+        ("Lago Guaíba, RS", ["86%", "14 jan 2026", "12 nov 2026"]),
+    ]
+
+
+# ---------- a resposta cita a área afetada? ----------
+
+
+@pytest.mark.parametrize(
+    ("idioma", "texto", "area"),
+    [
+        ("pt", "O radar mediu **212 km²** de cheia.", 212),
+        ("pt", "O radar mediu **212** km² de cheia.", 212),
+        ("pt", "Área de 212 km2.", 212),
+        ("pt", "Área de 2.500,25 km².", 2500.25),
+        ("en", "An area of 2,500.25 km².", 2500.25),
+        ("en", "An area of 212 square kilometers.", 212),
+        ("pt", "Área de 212 quilômetros quadrados.", 212),
+    ],
+)
+def test_reconhece_a_area_afetada_citada(idioma: str, texto: str, area: float) -> None:
+    resultados = [("consultar_hotspot", hotspot(affected_area_km2=area))]
+
+    assert cita_area_afetada(resposta(texto, idioma), resultados)
+    assert cita_area_afetada(resposta(idioma=idioma, medido=[texto]), resultados)
+
+
+@pytest.mark.parametrize(
+    ("texto", "area"),
+    [
+        ("O radar mediu uma mudança no hotspot.", 212),
+        ("Há 212 pessoas na área.", 212),
+        ("Confiança de 86%.", 86),
+        ("Limiar de 3 dB.", 3),
+        ("Passagem de 12 nov 2026.", 12),
+        ("Área de 213 km².", 212),
+    ],
+)
+def test_sem_a_area_em_km2_nao_conta_como_citada(texto: str, area: float) -> None:
+    assert not cita_area_afetada(resposta(texto), [("consultar_hotspot", hotspot(affected_area_km2=area))])
+
+
+def test_sem_area_medida_nao_ha_o_que_citar() -> None:
+    assert cita_area_afetada(resposta("Sem medição."), [("consultar_hotspot", hotspot(affected_area_km2=None))])
+    assert cita_area_afetada(resposta("Sem medição."), [])
+
+
+def test_basta_citar_a_area_de_um_dos_hotspots() -> None:
+    resultados = [
+        ("consultar_hotspot", hotspot()),
+        ("consultar_hotspot", hotspot(id="kariba", affected_area_km2=50)),
+    ]
+
+    assert cita_area_afetada(resposta("Em Kariba, 50 km²."), resultados)

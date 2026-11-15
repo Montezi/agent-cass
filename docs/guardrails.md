@@ -131,7 +131,13 @@ até 40 caracteres, no máximo 10 valores), nunca com o texto da resposta.
 
 Na primeira falha, solicita uma correção no mesmo Agent, listando até 8 valores
 ("o valor 2024 não está nos resultados; remova ou use um valor consultado") e,
-se for o caso, pedindo para tratar o El Niño como hipótese. Na segunda falha,
+se for o caso, pedindo para tratar o El Niño como hipótese. A mensagem também
+lista os valores do hotspot que devem ficar, tirados dos resultados e no formato
+do idioma do pedido: "Mantenha os valores confirmados: 212 km², 86%, 14 jan 2026,
+12 nov 2026, 3 dB." (área, confiança, `baseline_pass`, `last_pass` e limiar; o
+que é `null` fica de fora). Se a resposta corrigida passar na verificação mas não
+citar, em km², a área afetada de nenhum hotspot consultado (quando há área
+medida e o tipo é `resposta`), vale a resposta montada pelo código. Na segunda falha,
 descarta o que o modelo escreveu e devolve uma resposta montada pelo código com
 os hotspots consultados (até 3), como o modo demo do frontend: classe, área,
 datas (`baseline_pass` e `last_pass`), confiança do modelo com o nível do
