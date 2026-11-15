@@ -276,8 +276,33 @@ def _coletar_texto(texto: str, evidencias: _Evidencias, idioma: Idioma) -> None:
                 evidencias.numeros.add(numero)
 
 
+def _textos_publicados(resposta: RespostaCass) -> list[str]:
+    """Todos os campos livres que para_contrato transforma em parágrafos."""
+    textos = [resposta.texto, *resposta.medido, *resposta.opcoes]
+    if resposta.hipotese is not None:
+        textos.extend([resposta.hipotese.texto, resposta.hipotese.evidencia])
+    return textos
+
+
+def _nomes_de_hotspots(resultados: list[Resultado]) -> set[str]:
+    """Nomes exatos podem conter dígitos, mas não autorizam medições com esses dígitos."""
+    nomes: set[str] = set()
+    for _, dados in resultados:
+        if "erro" in dados or dados.get("disponivel") is False:
+            continue
+        hotspots = [dados.get("hotspot"), *(dados.get("hotspots") or [])]
+        for hotspot in hotspots:
+            if not isinstance(hotspot, dict):
+                continue
+            for chave in ("name", "short_name"):
+                nome = hotspot.get(chave)
+                if isinstance(nome, dict):
+                    nomes.update(v.strip() for v in nome.values() if isinstance(v, str))
+    return nomes
+
+
 def numeros_confirmados(resposta: RespostaCass, resultados: list[Resultado]) -> bool:
-    """Confere números de texto/medido; valores ausentes nunca viram zero.
+    """Confere números em todos os campos publicados; valores ausentes nunca viram zero.
 
     A comparação reconhece o formato PT/EN, datas do dado e confiança em %. Não
     usa IDs, coordenadas ou fontes como prova de uma medição e não calcula novas
@@ -286,7 +311,10 @@ def numeros_confirmados(resposta: RespostaCass, resultados: list[Resultado]) -> 
     evidencias = _Evidencias()
     for _, dados in resultados:
         _coletar(dados, evidencias, resposta.idioma)
-    for trecho in [resposta.texto, *resposta.medido]:
+    nomes = _nomes_de_hotspots(resultados)
+    for trecho in _textos_publicados(resposta):
+        if trecho in resposta.opcoes and trecho.strip() in nomes:
+            continue
         texto = _sem_proveniencia(trecho, evidencias)
         datas = _datas_no_texto(texto, resposta.idioma)
         for _, _, ano, mes, dia, literal in datas:
@@ -373,9 +401,7 @@ def afirma_causalidade(texto: str) -> bool:
 
 def validar_resposta(resposta: RespostaCass, resultados: list[Resultado]) -> bool:
     """Camada final antes de devolver a resposta: números confirmados e sem causa afirmada."""
-    textos = [resposta.texto, *resposta.medido]
-    if resposta.hipotese is not None:
-        textos.extend([resposta.hipotese.texto, resposta.hipotese.evidencia])
+    textos = _textos_publicados(resposta)
     return numeros_confirmados(resposta, resultados) and not any(afirma_causalidade(t) for t in textos)
 
 

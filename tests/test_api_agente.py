@@ -611,7 +611,7 @@ def test_contexto_do_el_nino_nao_e_dado_de_hipotese(
 def test_hipotese_fica_quando_a_ferramenta_devolveu_dados(
     cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
 ) -> None:
-    com_dados = {"disponivel": True, "hipotese": {"text": "chuva", "evidence": "série", "strength": "weak"}}
+    com_dados = {"disponivel": True, "hipotese": {"text": "chuva", "evidence": "série", "strength": "weak", "date": "2023-01-01"}}
     simular(trocas=troca_de_ferramenta("hipotese", com_dados, "t1"))
 
     resposta = perguntar(cliente)
