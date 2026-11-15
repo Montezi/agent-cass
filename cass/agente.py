@@ -11,18 +11,44 @@ from strands import Agent
 from strands.models.gemini import GeminiModel
 
 from cass.config import Configuracao
-from cass.ferramentas import consultar_hotspot, listar_hotspots
-from cass.modelos import PedidoAgente, RespostaCass
+from cass.ferramentas import (
+    consultar_hotspot,
+    contexto_enso,
+    explicar_classe,
+    exposicao,
+    hipotese,
+    listar_hotspots,
+    previsao_tempo,
+    rascunhar_alerta,
+)
+from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
 
 logger = logging.getLogger(__name__)
 
 TEMPERATURA = 0.2
+# Gemini 3: o pensamento se regula por thinking_level (thinking_budget está obsoleto).
+# O gemini-3.8-flash aceita low, medium (padrão) e high; não dá para desligar.
+# Com low, a mediana caiu de ~10 s para ~3 a 5 s, sem perder qualidade nos testes.
+NIVEL_DE_PENSAMENTO = "low"
+# Teto por chamada ao modelo, contando o pensamento. Com low, as respostas usam menos
+# de 300; o teto só corta um raciocínio descontrolado (que viraria resposta incompleta).
+MAX_TOKENS_DE_SAIDA = 2048
 TEMPO_LIMITE_S = 20.0  # o app desiste depois disso
-TENTATIVAS_DE_SAIDA = 3  # chamadas inválidas à ferramenta RespostaCass antes de desistir
+TENTATIVAS_DE_SAIDA = 3  # chamadas inválidas à ferramenta de saída antes de desistir
 IDIOMAS: dict[str, str] = {"pt": "português", "en": "inglês"}
-FERRAMENTAS = [listar_hotspots, consultar_hotspot]
+FERRAMENTAS = [
+    listar_hotspots,
+    consultar_hotspot,
+    explicar_classe,
+    hipotese,
+    exposicao,
+    contexto_enso,
+    previsao_tempo,
+    rascunhar_alerta,
+]
 NOMES_DAS_FERRAMENTAS = {f.tool_name for f in FERRAMENTAS}
-FERRAMENTAS_DE_DADOS = {"listar_hotspots", "consultar_hotspot"}
+
+Resultado = tuple[str, dict[str, Any]]  # (ferramenta, o dict que ela devolveu)
 
 # Apêndice C do plano de desenvolvimento.
 PROMPT_DE_SISTEMA = """\
@@ -56,7 +82,12 @@ def criar_modelo(config: Configuracao) -> GeminiModel:
     return GeminiModel(
         client=cliente,
         model_id=config.gemini_model,
-        params={"temperature": TEMPERATURA},
+        # Vão direto para o genai.types.GenerateContentConfig.
+        params={
+            "temperature": TEMPERATURA,
+            "thinking_config": {"thinking_level": NIVEL_DE_PENSAMENTO},
+            "max_output_tokens": MAX_TOKENS_DE_SAIDA,
+        },
     )
 
 
@@ -84,24 +115,27 @@ async def responder(
             agente = criar_agente(config, pedido.language)
             resultado = await agente.invoke_async(
                 _mensagem(pedido.question, hotspot),
-                structured_output_model=RespostaCass,
+                structured_output_model=RespostaDoModelo,
                 limits={"structured_output_attempts": TENTATIVAS_DE_SAIDA},
             )
     except TimeoutError as e:
         raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
 
-    resposta = resultado.structured_output
-    if not isinstance(resposta, RespostaCass):
+    do_modelo = resultado.structured_output
+    if not isinstance(do_modelo, RespostaDoModelo):
         raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
 
-    usadas = _ferramentas_usadas(agente.messages)
-    if hotspot is not None:
-        usadas = list(dict.fromkeys(["consultar_hotspot", *usadas]))
-    exemplo = (hotspot is not None and hotspot["dados_de_exemplo"] is True) or (
-        _usou_dados_de_exemplo(agente.messages)
+    buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
+    resultados = [*buscado, *_resultados_das_ferramentas(agente.messages)]
+    usadas = list(dict.fromkeys([n for n, _ in buscado] + _ferramentas_chamadas(agente.messages)))
+    # O que vem das ferramentas o código sabe; não fica a critério do modelo.
+    resposta = RespostaCass(
+        **do_modelo.model_dump(exclude={"hipotese"}),
+        hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
+        idioma=pedido.language,
+        fontes=_fontes(resultados),
+        dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
     )
-    # Estes dois o código sabe; não ficam a critério do modelo.
-    resposta = resposta.model_copy(update={"idioma": pedido.language, "dados_de_exemplo": exemplo})
     return resposta, usadas
 
 
@@ -128,7 +162,7 @@ def _mensagem(pergunta: str, hotspot: dict[str, Any] | None) -> str:
     )
 
 
-def _ferramentas_usadas(mensagens: list[dict[str, Any]]) -> list[str]:
+def _ferramentas_chamadas(mensagens: list[dict[str, Any]]) -> list[str]:
     """Ferramentas do Cass que o modelo chamou, em ordem e sem repetir."""
     nomes = (
         bloco["toolUse"]["name"]
@@ -139,22 +173,47 @@ def _ferramentas_usadas(mensagens: list[dict[str, Any]]) -> list[str]:
     return list(dict.fromkeys(n for n in nomes if n in NOMES_DAS_FERRAMENTAS))
 
 
-def _usou_dados_de_exemplo(mensagens: list[dict[str, Any]]) -> bool:
-    """True se uma ferramenta de dados devolveu dados_de_exemplo = true nesta conversa."""
+def _resultados_das_ferramentas(mensagens: list[dict[str, Any]]) -> list[Resultado]:
+    """Os dicts que as ferramentas do Cass devolveram nesta pergunta, em ordem.
+
+    A ferramenta de saída estruturada não é do Cass e fica de fora.
+    """
     nomes: dict[str, str] = {}
+    resultados: list[Resultado] = []
     for mensagem in mensagens:
         for bloco in mensagem.get("content", []):
             if "toolUse" in bloco:
                 nomes[bloco["toolUse"]["toolUseId"]] = bloco["toolUse"]["name"]
             elif "toolResult" in bloco:
-                resultado = bloco["toolResult"]
-                if nomes.get(resultado["toolUseId"]) not in FERRAMENTAS_DE_DADOS:
+                nome = nomes.get(bloco["toolResult"]["toolUseId"])
+                if nome not in NOMES_DAS_FERRAMENTAS:
                     continue
-                for parte in resultado.get("content", []):
+                for parte in bloco["toolResult"].get("content", []):
                     try:
                         dados = json.loads(parte.get("text", ""))
                     except ValueError:
                         continue
-                    if isinstance(dados, dict) and dados.get("dados_de_exemplo") is True:
-                        return True
-    return False
+                    if isinstance(dados, dict):
+                        resultados.append((nome, dados))
+    return resultados
+
+
+def _tem_hipotese(resultados: list[Resultado]) -> bool:
+    """Alguma ferramenta devolveu dados de hipótese (não só "ainda não calculado")?"""
+    return any(
+        "erro" not in r and r.get("disponivel") is not False and isinstance(r.get("hipotese"), dict)
+        for _, r in resultados
+    )
+
+
+def _fontes(resultados: list[Resultado]) -> list[Fonte]:
+    """Fontes dos resultados que deram certo: nome, data do dado e a ferramenta."""
+    fontes: list[Fonte] = []
+    for ferramenta, r in resultados:
+        if "erro" in r:
+            continue
+        candidatas = [r.get("fonte"), *(r.get("fontes") or [])]
+        for f in candidatas:
+            if isinstance(f, dict) and isinstance(f.get("nome"), str):
+                fontes.append(Fonte(nome=f["nome"], data=f.get("data") or "", ferramenta=ferramenta))
+    return fontes

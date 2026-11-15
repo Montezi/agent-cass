@@ -12,11 +12,13 @@ from typing import Annotated, Literal, Self
 
 from pydantic import (
     AfterValidator,
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
     Strict,
+    create_model,
     field_validator,
     model_validator,
 )
@@ -151,6 +153,21 @@ class ColecaoHotspots(_Contrato):
         return self
 
 
+# ---------- Resposta da GET /api/clima (docs/api-contract.md) ----------
+# Espelho do zod forecastResponseSchema (frontend, src/shared/lib/forecastSchema.ts).
+
+
+class DiaDePrevisao(_Contrato):
+    date: DataAaaaMmDd
+    precipitation_mm: Annotated[Numero, Field(ge=0)]
+
+
+class PrevisaoClima(_Contrato):
+    source: Literal["meteomatics", "open-meteo", "snapshot"]
+    updated_at: AwareDatetime
+    days: list[DiaDePrevisao] = Field(min_length=1)
+
+
 # ---------- Contrato público do POST /api/agente (docs/api-contract.md) ----------
 # Espelho do zod agentAnswerSchema (frontend, src/features/cass/agentApi.ts).
 # Chaves em inglês, como no contrato.
@@ -215,3 +232,18 @@ class RespostaCass(BaseModel):
     opcoes: list[str] = Field(default=[], description="Botões quando o Cass pergunta de volta")
     sugestoes: list[str] = Field(default=[], description="Próximas perguntas")
     dados_de_exemplo: bool = Field(default=False, description="true quando metadata.sample = true")
+
+
+# O que o modelo preenche: a RespostaCass sem os campos que o código sabe (idioma do
+# pedido, fontes e dados_de_exemplo tirados dos resultados das ferramentas). Mesmos
+# tipos, limites e descrições; o agente completa a RespostaCass depois.
+CAMPOS_DO_CODIGO = frozenset({"idioma", "fontes", "dados_de_exemplo"})
+RespostaDoModelo = create_model(
+    "RespostaDoModelo",
+    __doc__="Resposta do Cass ao app.",
+    **{
+        nome: (campo.annotation, campo)
+        for nome, campo in RespostaCass.model_fields.items()
+        if nome not in CAMPOS_DO_CODIGO
+    },
+)

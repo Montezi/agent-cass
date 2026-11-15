@@ -1,29 +1,63 @@
-"""Testes das ferramentas, com o respx servindo o fixture (sem chamar o Gemini)."""
+"""Testes das 8 ferramentas, com o respx servindo os dados (sem chamar o Gemini)."""
 
 import json
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 import respx
 
 from cass import ferramentas
-from cass.ferramentas import consultar_hotspot, listar_hotspots
+from cass.ferramentas import (
+    consultar_hotspot,
+    contexto_enso,
+    explicar_classe,
+    exposicao,
+    hipotese,
+    listar_hotspots,
+    previsao_tempo,
+    rascunhar_alerta,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
 DADOS_BASE = "http://dados.teste/dados"
 URL = f"{DADOS_BASE}/hotspots.geojson"
+CLIMA_URL = "http://clima.teste/api/clima"
 IDS = ["norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", "kariba", "borneo"]
+SEM_STATS = {"disponivel": False, "motivo": "ainda não calculado pelo pipeline"}
+AGORA = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+PREVISAO = {
+    "source": "meteomatics",
+    "updated_at": "2026-11-14T09:00:00Z",
+    "days": [
+        {"date": "2026-11-15", "precipitation_mm": 18},
+        {"date": "2026-11-16", "precipitation_mm": 6.5},
+        {"date": "2026-11-17", "precipitation_mm": 0},
+        {"date": "2026-11-18", "precipitation_mm": 2},
+    ],
+}
 
 
 @pytest.fixture(autouse=True)
 def ambiente(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "projeto-teste")
     monkeypatch.setenv("DADOS_BASE", DADOS_BASE)
+    monkeypatch.setenv("CLIMA_URL", CLIMA_URL)
+    monkeypatch.setenv("APP_ORIGIN", "http://app.teste")
+    monkeypatch.setattr(ferramentas, "_agora", lambda: AGORA)
     ferramentas.limpar_cache()
     yield
     ferramentas.limpar_cache()
+
+
+def fixture_com(**propriedades_do_guaiba: Any) -> dict:
+    dados = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    dados["features"][3]["properties"].update(propriedades_do_guaiba)
+    return dados
 
 
 @pytest.fixture
@@ -33,16 +67,78 @@ def rota(respx_mock: respx.MockRouter) -> respx.Route:
     )
 
 
-# ---------- especificação das ferramentas ----------
+@pytest.fixture
+def clima(respx_mock: respx.MockRouter) -> respx.Route:
+    return respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json=PREVISAO)
+    )
 
 
-def test_ferramentas_tem_nome_e_parametros_para_o_modelo() -> None:
-    assert listar_hotspots.tool_name == "listar_hotspots"
-    assert consultar_hotspot.tool_name == "consultar_hotspot"
+def assert_e_json(resultado: dict) -> None:
+    # O @tool do Strands faz json.dumps do dict; se falhar, manda o repr do Python.
+    json.dumps(resultado)
 
-    esquema = consultar_hotspot.tool_spec["inputSchema"]["json"]
-    assert esquema["required"] == ["id"]
-    assert esquema["properties"]["id"]["type"] == "string"
+
+# ---------- especificação que o modelo vê ----------
+
+
+@pytest.mark.parametrize(
+    ("ferramenta", "obrigatorios"),
+    [
+        (listar_hotspots, []),
+        (consultar_hotspot, ["id"]),
+        (explicar_classe, ["id", "classe"]),
+        (hipotese, ["id"]),
+        (exposicao, ["id"]),
+        (contexto_enso, ["id"]),
+        (previsao_tempo, ["id"]),
+        (rascunhar_alerta, ["id"]),
+    ],
+)
+def test_especificacao_da_ferramenta(ferramenta: Any, obrigatorios: list[str]) -> None:
+    esquema = ferramenta.tool_spec["inputSchema"]["json"]
+
+    assert ferramenta.tool_spec["description"]
+    assert sorted(esquema.get("required", [])) == sorted(obrigatorios)
+    for parametro in esquema["properties"].values():
+        assert parametro.get("description"), parametro
+
+
+# ---------- id inválido: mesma validação em todas ----------
+
+COM_ID: list[Callable[[str], dict]] = [
+    consultar_hotspot,
+    lambda i: explicar_classe(i, "flood"),
+    hipotese,
+    exposicao,
+    contexto_enso,
+    previsao_tempo,
+    rascunhar_alerta,
+]
+
+
+@pytest.mark.parametrize("chamar", COM_ID)
+def test_id_desconhecido_devolve_erro_com_validos(
+    rota: respx.Route, clima: respx.Route, chamar: Callable[[str], dict]
+) -> None:
+    resultado = chamar("lago-guaiba")
+
+    assert "lago-guaiba" in resultado["erro"]
+    assert resultado["validos"] == IDS
+    assert clima.call_count == 0
+
+
+@pytest.mark.parametrize("chamar", COM_ID)
+def test_timeout_nos_hotspots_vira_erro(
+    respx_mock: respx.MockRouter, chamar: Callable[[str], dict]
+) -> None:
+    respx_mock.get(URL).mock(side_effect=httpx.ReadTimeout("demorou"))
+
+    resultado = chamar("guaiba-rs")
+
+    assert "5 s" in resultado["erro"]
+    assert resultado["url"] == URL
+    assert_e_json(resultado)
 
 
 # ---------- listar_hotspots ----------
@@ -51,15 +147,24 @@ def test_ferramentas_tem_nome_e_parametros_para_o_modelo() -> None:
 def test_listar_hotspots(rota: respx.Route) -> None:
     resultado = listar_hotspots()
 
-    assert resultado["fonte"] == URL
+    assert resultado["fonte"] == {"nome": "NISAR", "data": None, "url": URL}
     assert resultado["dados_de_exemplo"] is True
     assert [h["id"] for h in resultado["hotspots"]] == IDS
-    guaiba = resultado["hotspots"][3]
-    assert guaiba == {
+    assert resultado["hotspots"][3] == {
         "id": "guaiba-rs",
         "name": {"pt": "Lago Guaíba, RS", "en": "Guaíba Lake, RS (Brazil)"},
         "dominant_class": None,
     }
+
+
+def test_listar_hotspots_data_da_fonte_e_a_passagem_mais_recente(
+    respx_mock: respx.MockRouter,
+) -> None:
+    respx_mock.get(URL).mock(
+        return_value=httpx.Response(200, json=fixture_com(last_pass="2026-11-12"))
+    )
+
+    assert listar_hotspots()["fonte"]["data"] == "2026-11-12"
 
 
 # ---------- consultar_hotspot ----------
@@ -68,7 +173,7 @@ def test_listar_hotspots(rota: respx.Route) -> None:
 def test_consultar_hotspot(rota: respx.Route) -> None:
     resultado = consultar_hotspot("guaiba-rs")
 
-    assert resultado["fonte"] == URL
+    assert resultado["fonte"] == {"nome": "NISAR", "data": None, "url": URL}
     assert resultado["dados_de_exemplo"] is True
     hotspot = resultado["hotspot"]
     assert hotspot["id"] == "guaiba-rs"
@@ -85,31 +190,281 @@ def test_consultar_hotspot_mantem_os_nulls(rota: respx.Route) -> None:
         assert hotspot[campo] is None
 
 
-def test_consultar_hotspot_desconhecido_devolve_erro_com_validos(rota: respx.Route) -> None:
-    resultado = consultar_hotspot("lago-guaiba")
+def test_consultar_hotspot_data_da_fonte_e_o_last_pass(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(URL).mock(
+        return_value=httpx.Response(200, json=fixture_com(last_pass="2026-11-12"))
+    )
 
-    assert "lago-guaiba" in resultado["erro"]
-    assert resultado["validos"] == IDS
+    resultado = consultar_hotspot("guaiba-rs")
 
-
-# ---------- o que vai para o modelo ----------
-
-
-def test_resultados_sao_json(rota: respx.Route) -> None:
-    # O @tool do Strands faz json.dumps do dict; se falhar, manda o repr do Python.
-    for resultado in (listar_hotspots(), consultar_hotspot("guaiba-rs")):
-        json.dumps(resultado)
+    assert resultado["fonte"]["data"] == "2026-11-12"
+    assert resultado["hotspot"]["last_pass"] == "2026-11-12"
+    assert_e_json(resultado)
 
 
-def test_last_pass_vai_como_texto(respx_mock: respx.MockRouter) -> None:
-    dados = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    dados["features"][3]["properties"]["last_pass"] = "2026-11-12"
+# ---------- explicar_classe, hipotese, exposicao: sem stats ainda ----------
+
+
+@pytest.mark.parametrize(
+    "chamar",
+    [lambda: explicar_classe("guaiba-rs", "flood"), lambda: hipotese("guaiba-rs"), lambda: exposicao("guaiba-rs")],
+)
+def test_sem_stats_nao_inventa_nada(rota: respx.Route, chamar: Callable[[], dict]) -> None:
+    assert chamar() == SEM_STATS
+
+
+def test_explicar_classe_recusa_classe_desconhecida(rota: respx.Route) -> None:
+    resultado = explicar_classe("guaiba-rs", "enchente")
+
+    assert "enchente" in resultado["erro"]
+    assert resultado["validos"] == ["flood", "drought", "fire_deforestation", "deformation", "stable"]
+
+
+# ---------- contexto_enso ----------
+
+
+def test_contexto_enso(rota: respx.Route) -> None:
+    resultado = contexto_enso("guaiba-rs")
+
+    assert resultado["hotspot_id"] == "guaiba-rs"
+    assert resultado["enso_effect"] == {
+        "pt": "chuva acima da média",
+        "en": "above-average rainfall",
+    }
+    assert resultado["dados_de_exemplo"] is True
+    assert resultado["fonte"] == {"nome": "Alerta CassAAndra", "data": None, "url": URL}
+
+
+def test_contexto_enso_sem_efeito(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(URL).mock(return_value=httpx.Response(200, json=fixture_com(enso_effect=None)))
+
+    assert contexto_enso("guaiba-rs")["enso_effect"] is None
+
+
+# ---------- previsao_tempo ----------
+
+
+def test_previsao_tempo(rota: respx.Route, clima: respx.Route) -> None:
+    resultado = previsao_tempo("guaiba-rs", 3)
+
+    assert resultado["fonte"]["nome"] == "Meteomatics"
+    assert resultado["fonte"]["data"] == "2026-11-14"
+    assert resultado["atualizada_em"] == "2026-11-14T09:00:00Z"
+    assert resultado["so_referencia"] is False
+    assert resultado["dias"] == [
+        {"date": "2026-11-15", "precipitation_mm": 18},
+        {"date": "2026-11-16", "precipitation_mm": 6.5},
+        {"date": "2026-11-17", "precipitation_mm": 0},
+    ]
+    assert_e_json(resultado)
+
+
+def test_previsao_tempo_chama_a_api_clima_como_o_contrato(
+    rota: respx.Route, clima: respx.Route
+) -> None:
+    previsao_tempo("guaiba-rs")
+
+    pedido = clima.calls.last.request
+    assert str(pedido.url).startswith(CLIMA_URL + "?")
+    assert dict(pedido.url.params) == {"hotspot": "guaiba-rs", "lat": "-30.0", "lon": "-51.2"}
+    assert pedido.extensions["timeout"]["read"] == 5.0
+
+
+def test_previsao_tempo_padrao_e_3_dias(rota: respx.Route, clima: respx.Route) -> None:
+    assert len(previsao_tempo("guaiba-rs")["dias"]) == 3
+
+
+@pytest.mark.parametrize("dias", [0, 8, -1])
+def test_previsao_tempo_recusa_dias_fora_de_1_a_7(
+    rota: respx.Route, clima: respx.Route, dias: int
+) -> None:
+    resultado = previsao_tempo("guaiba-rs", dias)
+
+    assert "1 a 7" in resultado["erro"]
+    assert clima.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("fonte", "nome"),
+    [("meteomatics", "Meteomatics"), ("open-meteo", "Open-Meteo"), ("snapshot", "Snapshot")],
+)
+def test_previsao_tempo_repassa_a_fonte(
+    rota: respx.Route, respx_mock: respx.MockRouter, fonte: str, nome: str
+) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json={**PREVISAO, "source": fonte})
+    )
+
+    assert previsao_tempo("guaiba-rs")["fonte"]["nome"] == nome
+
+
+def test_previsao_antiga_e_so_referencia(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
+    # api-contract.md: mais de 3 dias, só referência; nunca dispara aviso de chuva.
+    respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json={**PREVISAO, "updated_at": "2026-11-10T09:00:00Z"})
+    )
+
+    assert previsao_tempo("guaiba-rs")["so_referencia"] is True
+
+
+@pytest.mark.parametrize(
+    "resposta",
+    [
+        pytest.param(httpx.ReadTimeout("demorou"), id="timeout"),
+        pytest.param(httpx.Response(500), id="http-500"),
+        pytest.param(httpx.Response(200, json={**PREVISAO, "source": "accuweather"}), id="fonte"),
+        pytest.param(httpx.Response(200, json={**PREVISAO, "days": []}), id="sem-dias"),
+        pytest.param(
+            httpx.Response(200, json={**PREVISAO, "days": [{"date": "2026-11-15", "precipitation_mm": -1}]}),
+            id="chuva-negativa",
+        ),
+    ],
+)
+def test_falha_na_api_clima_vira_erro(
+    rota: respx.Route, respx_mock: respx.MockRouter, resposta: httpx.Response | Exception
+) -> None:
+    rota_clima = respx_mock.get(url__startswith=CLIMA_URL)
+    if isinstance(resposta, Exception):
+        rota_clima.mock(side_effect=resposta)
+    else:
+        rota_clima.mock(return_value=resposta)
+
+    resultado = previsao_tempo("guaiba-rs")
+
+    assert resultado["erro"]
+    assert "fonte" not in resultado
+    assert_e_json(resultado)
+
+
+def test_timeout_na_api_clima_diz_o_tempo(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(side_effect=httpx.ConnectTimeout("demorou"))
+
+    assert "5 s" in previsao_tempo("guaiba-rs")["erro"]
+
+
+def test_previsao_tempo_usa_cache(rota: respx.Route, clima: respx.Route) -> None:
+    previsao_tempo("guaiba-rs")
+    previsao_tempo("guaiba-rs", 7)
+
+    assert clima.call_count == 1
+
+
+# ---------- rascunhar_alerta ----------
+
+
+def numeros(texto: str) -> set[str]:
+    return set(re.findall(r"\d+(?:[.,]\d+)?", texto))
+
+
+def test_alerta_sem_medicao(rota: respx.Route, clima: respx.Route) -> None:
+    resultado = rascunhar_alerta("guaiba-rs")
+
+    texto = resultado["rascunho"]
+    assert resultado["enviado"] is False
+    assert texto.startswith("Alerta CassAAndra: Lago Guaíba, RS")
+    assert "o radar ainda não tem medição para esta área" in texto
+    assert "18 mm em 15 nov" in texto
+    assert "6,5 mm em 16 nov" in texto
+    assert "Dados de exemplo" in texto
+    assert texto.endswith("Veja no app: http://app.teste/?hotspot=guaiba-rs")
+    assert resultado["dados_de_exemplo"] is True
+    assert resultado["fontes"] == [
+        {"nome": "NISAR", "data": None, "url": URL},
+        {"nome": "Meteomatics", "data": "2026-11-14", "url": clima.calls.last.request.url.__str__()},
+    ]
+    assert_e_json(resultado)
+
+
+def test_alerta_com_medicao_em_portugues(respx_mock: respx.MockRouter, clima: respx.Route) -> None:
+    respx_mock.get(URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=fixture_com(
+                dominant_class="flood",
+                affected_area_km2=212.5,
+                confidence=0.86,
+                last_pass="2026-11-12",
+            ),
+        )
+    )
+
+    texto = rascunhar_alerta("guaiba-rs", "pt")["rascunho"]
+
+    assert "Medido: Cheia em 212,5 km² (confiança de 86%), passagem do radar de 12 nov 2026." in texto
+
+
+def test_alerta_em_ingles(respx_mock: respx.MockRouter, clima: respx.Route) -> None:
+    respx_mock.get(URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=fixture_com(
+                dominant_class="flood",
+                affected_area_km2=212.5,
+                confidence=0.86,
+                last_pass="2026-11-12",
+            ),
+        )
+    )
+
+    texto = rascunhar_alerta("guaiba-rs", "en")["rascunho"]
+
+    assert texto.startswith("CassAAndra alert: Guaíba Lake, RS (Brazil)")
+    assert "Measured: Flood over 212.5 km² (86% confidence), radar pass of Nov 12, 2026." in texto
+    assert "18 mm on Nov 15" in texto
+    assert "Sample data" in texto
+
+
+def test_alerta_nao_inventa_numeros(respx_mock: respx.MockRouter, clima: respx.Route) -> None:
+    dados = fixture_com(
+        dominant_class="flood", affected_area_km2=212.5, confidence=0.86, last_pass="2026-11-12"
+    )
     respx_mock.get(URL).mock(return_value=httpx.Response(200, json=dados))
 
-    assert consultar_hotspot("guaiba-rs")["hotspot"]["last_pass"] == "2026-11-12"
+    texto = rascunhar_alerta("guaiba-rs")["rascunho"]
+
+    # Todo número vem dos dados: área, confiança (86%), datas (passagem, previsão e
+    # geração da previsão) e chuva por dia.
+    permitidos = {"212,5", "86", "12", "2026", "14", "15", "16", "17", "18", "6,5", "0"}
+    assert numeros(texto) <= permitidos, numeros(texto) - permitidos
 
 
-# ---------- leitura e cache ----------
+def test_alerta_sem_previsao_ainda_sai(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(side_effect=httpx.ConnectTimeout("demorou"))
+
+    resultado = rascunhar_alerta("guaiba-rs")
+
+    assert "Previsão: indisponível agora." in resultado["rascunho"]
+    assert [f["nome"] for f in resultado["fontes"]] == ["NISAR"]
+
+
+def test_alerta_com_previsao_antiga_avisa(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json={**PREVISAO, "updated_at": "2026-11-10T09:00:00Z"})
+    )
+
+    texto = rascunhar_alerta("guaiba-rs")["rascunho"]
+
+    assert "Previsão de 10 nov 2026, só para referência" in texto
+    assert "18 mm" not in texto
+
+
+def test_alerta_nao_inclui_hipotese_nem_exposicao_sem_dados(
+    rota: respx.Route, clima: respx.Route
+) -> None:
+    texto = rascunhar_alerta("guaiba-rs")["rascunho"]
+
+    assert "Hipótese" not in texto
+    assert "El Niño" not in texto
+
+
+def test_alerta_recusa_idioma_desconhecido(rota: respx.Route, clima: respx.Route) -> None:
+    resultado = rascunhar_alerta("guaiba-rs", "es")
+
+    assert resultado["validos"] == ["pt", "en"]
+    assert clima.call_count == 0
+
+
+# ---------- leitura e cache dos hotspots ----------
 
 
 def test_le_com_timeout_de_5_segundos(rota: respx.Route) -> None:
@@ -126,6 +481,7 @@ def test_le_com_timeout_de_5_segundos(rota: respx.Route) -> None:
 def test_usa_o_cache_entre_chamadas(rota: respx.Route) -> None:
     listar_hotspots()
     consultar_hotspot("guaiba-rs")
+    hipotese("guaiba-rs")
     consultar_hotspot("nao-existe")
 
     assert rota.call_count == 1
@@ -156,9 +512,6 @@ def test_cache_muda_com_dados_base(
     assert (rota.call_count, outra.call_count) == (1, 1)
 
 
-# ---------- falhas viram dado, não exceção ----------
-
-
 @pytest.mark.parametrize(
     "resposta",
     [
@@ -183,8 +536,9 @@ def test_falha_na_leitura_vira_erro(
 
     for resultado in (listar_hotspots(), consultar_hotspot("guaiba-rs")):
         assert resultado["erro"]
-        assert resultado["fonte"] == URL
-        json.dumps(resultado)
+        assert resultado["url"] == URL
+        assert "fonte" not in resultado
+        assert_e_json(resultado)
 
 
 def test_erro_nao_fica_no_cache(respx_mock: respx.MockRouter) -> None:

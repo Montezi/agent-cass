@@ -49,14 +49,41 @@ def test_modelo_usa_gemini_model_e_temperatura(config: Configuracao) -> None:
     assert modelo_config["params"]["temperature"] == TEMPERATURA == 0.2
 
 
+def test_modelo_limita_o_pensamento_e_a_saida(config: Configuracao) -> None:
+    params = criar_modelo(config).get_config()["params"]
+
+    assert params["thinking_config"] == {"thinking_level": "low"}
+    assert params["max_output_tokens"] == 2048
+
+
+def test_parametros_viram_um_generate_content_config_valido(config: Configuracao) -> None:
+    # O GeminiModel repassa params ao GenerateContentConfig; um nome errado quebraria aqui.
+    from google.genai import types
+
+    gerado = types.GenerateContentConfig(**criar_modelo(config).get_config()["params"])
+
+    assert gerado.thinking_config is not None
+    assert gerado.thinking_config.thinking_level == types.ThinkingLevel.LOW
+    assert gerado.max_output_tokens == 2048
+
+
 def test_modelo_e_reaproveitado(config: Configuracao) -> None:
     assert criar_modelo(config) is criar_modelo(config)
 
 
-def test_agente_tem_so_as_duas_ferramentas(config: Configuracao) -> None:
+def test_agente_tem_as_oito_ferramentas(config: Configuracao) -> None:
     agente = criar_agente(config)
 
-    assert sorted(agente.tool_names) == ["consultar_hotspot", "listar_hotspots"]
+    assert sorted(agente.tool_names) == [
+        "consultar_hotspot",
+        "contexto_enso",
+        "explicar_classe",
+        "exposicao",
+        "hipotese",
+        "listar_hotspots",
+        "previsao_tempo",
+        "rascunhar_alerta",
+    ]
 
 
 def test_agente_tem_o_prompt_do_apendice_c(config: Configuracao) -> None:
@@ -107,7 +134,10 @@ def test_api_agente_responde_sobre_o_guaiba(
     assert "consultar_hotspot" in resposta.tools
     # Só existe porque o hotspot buscado veio do fixture (metadata.sample = true).
     assert resposta.note is not None and resposta.note.startswith("Dados de exemplo")
-    assert resposta.sources
+    # Fontes montadas pelo código: o fixture não tem last_pass.
+    assert resposta.sources[0] == "NISAR, data não informada"
+    # Nenhuma ferramenta tem dados de hipótese ainda.
+    assert not any(p.startswith("Hipótese") for p in resposta.paragraphs)
     # O fixture não tem nenhum valor medido: qualquer área citada seria inventada.
     for paragrafo in resposta.paragraphs:
         assert not re.search(r"\d\s*km", paragrafo), paragrafo

@@ -5,25 +5,21 @@ Os campos da RespostaCass sem lugar nele estão em docs/propostas-api-contract.m
 """
 
 import re
-from typing import Literal
 
+from cass.formato import AVISO_DE_EXEMPLO, Idioma, formatar_fonte
 from cass.modelos import RespostaAgente, RespostaCass
-
-Idioma = Literal["pt", "en"]
 
 ROTULOS: dict[Idioma, dict[str, str]] = {
     "pt": {
         "medido": "Medido: {frases}.",
         "hipotese": "Hipótese (força {forca}): {texto}. Evidência: {evidencia}.",
         "opcoes": "Opções: {opcoes}.",
-        "exemplo": "Dados de exemplo: posições aproximadas e valores ilustrativos.",
         "erro": "Não consegui responder agora. Tente de novo em instantes.",
     },
     "en": {
         "medido": "Measured: {frases}.",
         "hipotese": "Hypothesis ({forca} strength): {texto}. Evidence: {evidencia}.",
         "opcoes": "Options: {opcoes}.",
-        "exemplo": "Sample data: approximate positions and illustrative values.",
         "erro": "I couldn't answer right now. Please try again in a moment.",
     },
 }
@@ -57,12 +53,13 @@ def para_contrato(resposta: RespostaCass, ferramentas: list[str]) -> RespostaAge
     if resposta.opcoes:
         paragrafos.append(rotulos["opcoes"].format(opcoes=", ".join(resposta.opcoes)))
 
-    fontes = [f"{f.nome}, {f.data.strip()}" if f.data.strip() else f.nome for f in resposta.fontes]
+    # As fontes já vêm montadas pelo código (cass/agente.py), não pelo modelo.
+    fontes = [formatar_fonte(f.nome, f.data, resposta.idioma) for f in resposta.fontes]
     return RespostaAgente(
         paragraphs=paragrafos,
         tools=ferramentas,
         sources=list(dict.fromkeys(fontes)),
-        note=rotulos["exemplo"] if resposta.dados_de_exemplo else None,
+        note=AVISO_DE_EXEMPLO[resposta.idioma] if resposta.dados_de_exemplo else None,
     )
 
 

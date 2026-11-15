@@ -146,16 +146,37 @@ def test_opcoes_viram_paragrafo() -> None:
     assert contrato.paragraphs == ["Qual lago?", "Opções: Lago Guaíba, Lago Kariba."]
 
 
-def test_fontes_viram_texto_com_data_sem_repeticao() -> None:
-    fontes = [
-        {"nome": "NISAR GCOV", "data": "12 nov 2026", "ferramenta": "consultar_hotspot"},
-        {"nome": "NISAR GCOV", "data": "12 nov 2026", "ferramenta": "explicar_classe"},
-        {"nome": "hotspots.geojson", "data": " ", "ferramenta": "listar_hotspots"},
-    ]
+FONTES = [
+    {"nome": "NISAR", "data": "2026-11-12", "ferramenta": "consultar_hotspot"},
+    {"nome": "NISAR", "data": "2026-11-12", "ferramenta": "listar_hotspots"},
+    {"nome": "Meteomatics", "data": "2026-11-14", "ferramenta": "previsao_tempo"},
+    {"nome": "Alerta CassAAndra", "data": "", "ferramenta": "contexto_enso"},
+]
 
-    contrato = para_contrato(cass(fontes=fontes), [])
 
-    assert contrato.sources == ["NISAR GCOV, 12 nov 2026", "hotspots.geojson"]
+@pytest.mark.parametrize(
+    ("idioma", "esperado"),
+    [
+        (
+            "pt",
+            ["NISAR, 12 nov 2026", "Meteomatics, 14 nov 2026", "Alerta CassAAndra, data não informada"],
+        ),
+        (
+            "en",
+            ["NISAR, Nov 12, 2026", "Meteomatics, Nov 14, 2026", "Alerta CassAAndra, date not provided"],
+        ),
+    ],
+)
+def test_fontes_com_data_formatada_sem_repeticao(idioma: str, esperado: list[str]) -> None:
+    contrato = para_contrato(cass(idioma=idioma, fontes=FONTES), [])
+
+    assert contrato.sources == esperado
+
+
+def test_data_que_nao_e_iso_passa_como_veio() -> None:
+    fonte = {"nome": "JRC", "data": "2025", "ferramenta": "exposicao"}
+
+    assert para_contrato(cass(fontes=[fonte]), []).sources == ["JRC, 2025"]
 
 
 @pytest.mark.parametrize(

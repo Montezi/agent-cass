@@ -15,16 +15,17 @@ from fastapi.testclient import TestClient
 
 from cass import agente, ferramentas, main
 from cass.config import Configuracao
-from cass.modelos import RespostaAgente, RespostaCass
+from cass.modelos import RespostaAgente, RespostaCass, RespostaDoModelo
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
 URL_DADOS = "http://dados.teste/dados/hotspots.geojson"
+HIPOTESE = {"texto": "chuva acima da média", "evidencia": "série de 2023", "forca": "fraca"}
 
-RESPOSTA_DO_MODELO = RespostaCass(
+# O modelo manda uma hipótese, mas nenhuma ferramenta devolveu dados de hipótese.
+RESPOSTA_DO_MODELO = RespostaDoModelo(
     tipo="resposta",
-    idioma="pt",
     texto="No Guaíba, o radar ainda não tem medição.\n\nOs dados são de exemplo.",
-    fontes=[{"nome": "hotspots.geojson", "data": "sem data", "ferramenta": "consultar_hotspot"}],
+    hipotese=HIPOTESE,
     confianca="baixa",
 )
 
@@ -51,7 +52,7 @@ def troca_de_ferramenta(nome: str, resultado: dict, id_: str) -> list[dict]:
 class AgenteSimulado:
     def __init__(
         self,
-        resposta: RespostaCass | None = RESPOSTA_DO_MODELO,
+        resposta: RespostaDoModelo | None = RESPOSTA_DO_MODELO,
         erro: Exception | None = None,
         demora_s: float = 0.0,
         trocas: list[dict] | None = None,
@@ -138,11 +139,12 @@ def test_json_valida_contra_o_contrato(
 
     resposta = perguntar(cliente)
 
+    # Sem o parágrafo de hipótese: nenhuma ferramenta devolveu dados de hipótese.
     assert resposta.paragraphs == [
         "No Guaíba, o radar ainda não tem medição.",
         "Os dados são de exemplo.",
     ]
-    assert resposta.sources == ["hotspots.geojson, sem data"]
+    assert resposta.sources == ["NISAR, data não informada"]
 
 
 def test_agente_recebe_o_esquema_e_o_limite_de_tentativas(
@@ -153,8 +155,16 @@ def test_agente_recebe_o_esquema_e_o_limite_de_tentativas(
     perguntar(cliente)
 
     chamada = simulado.chamadas[0]
-    assert chamada["structured_output_model"] is RespostaCass
+    assert chamada["structured_output_model"] is RespostaDoModelo
     assert chamada["limits"] == {"structured_output_attempts": 3}
+
+
+def test_modelo_nao_preenche_fontes_idioma_nem_dados_de_exemplo() -> None:
+    do_codigo = {"idioma", "fontes", "dados_de_exemplo"}
+
+    assert set(RespostaDoModelo.model_fields) == set(RespostaCass.model_fields) - do_codigo
+    for nome, campo in RespostaDoModelo.model_fields.items():
+        assert campo.annotation == RespostaCass.model_fields[nome].annotation
 
 
 def test_usa_a_config_da_subida_e_o_idioma_do_pedido(
@@ -258,12 +268,14 @@ def test_ferramentas_do_modelo_entram_em_tools_sem_repetir(
     assert perguntar(cliente).tools == ["consultar_hotspot", "listar_hotspots"]
 
 
-def test_modelo_nao_decide_dados_de_exemplo(
+def test_sem_ferramentas_nao_ha_note_nem_fontes(
     cliente: TestClient, simular: Callable[..., AgenteSimulado]
 ) -> None:
-    simular(resposta=RESPOSTA_DO_MODELO.model_copy(update={"dados_de_exemplo": True}))
+    simular()
 
-    assert perguntar(cliente, hotspot_id=None).note is None
+    resposta = perguntar(cliente, hotspot_id=None)
+
+    assert (resposta.note, resposta.sources, resposta.tools) == (None, [], [])
 
 
 def test_dados_de_exemplo_vindos_de_ferramenta_do_modelo(
@@ -282,6 +294,103 @@ def test_resultado_de_ferramenta_que_nao_e_de_dados_nao_conta(
     simular(trocas=troca_de_ferramenta("RespostaCass", {"dados_de_exemplo": True}, "t1"))
 
     assert perguntar(cliente, hotspot_id=None).note is None
+
+
+# ---------- hipótese só com dados de hipótese de uma ferramenta ----------
+
+
+def test_hipotese_indisponivel_nao_deixa_a_do_modelo_passar(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    sem_stats = {"disponivel": False, "motivo": "ainda não calculado pelo pipeline"}
+    simular(trocas=troca_de_ferramenta("hipotese", sem_stats, "t1"))
+
+    resposta = perguntar(cliente)
+
+    assert not any(p.startswith("Hipótese") for p in resposta.paragraphs)
+
+
+def test_contexto_do_el_nino_nao_e_dado_de_hipotese(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    contexto = {"enso_effect": {"pt": "chuva acima da média", "en": "above-average rainfall"}}
+    simular(trocas=troca_de_ferramenta("contexto_enso", contexto, "t1"))
+
+    assert not any(p.startswith("Hipótese") for p in perguntar(cliente).paragraphs)
+
+
+def test_hipotese_fica_quando_a_ferramenta_devolveu_dados(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    com_dados = {"disponivel": True, "hipotese": {"text": "chuva", "evidence": "série", "strength": "weak"}}
+    simular(trocas=troca_de_ferramenta("hipotese", com_dados, "t1"))
+
+    resposta = perguntar(cliente)
+
+    assert resposta.paragraphs[-1] == (
+        "Hipótese (força fraca): chuva acima da média. Evidência: série de 2023."
+    )
+
+
+# ---------- fontes montadas pelo código ----------
+
+
+def test_fontes_vem_das_ferramentas_com_a_data_de_cada_uma(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    previsao = {"fonte": {"nome": "Meteomatics", "data": "2026-11-14", "url": "http://x"}}
+    simular(trocas=troca_de_ferramenta("previsao_tempo", previsao, "t1"))
+
+    assert perguntar(cliente).sources == [
+        "NISAR, data não informada",
+        "Meteomatics, 14 nov 2026",
+    ]
+
+
+def test_fonte_do_hotspot_usa_o_last_pass(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], respx_mock: respx.MockRouter
+) -> None:
+    dados = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    dados["features"][3]["properties"]["last_pass"] = "2026-11-12"
+    respx_mock.get(URL_DADOS).mock(return_value=httpx.Response(200, json=dados))
+    simular()
+
+    assert perguntar(cliente).sources == ["NISAR, 12 nov 2026"]
+
+
+def test_fontes_em_ingles(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    simular()
+
+    assert perguntar(cliente, language="en").sources == ["NISAR, date not provided"]
+
+
+def test_resultado_com_erro_nao_vira_fonte(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    falhou = {"erro": "a /api/clima não respondeu em 5 s", "url": "http://x"}
+    simular(trocas=troca_de_ferramenta("previsao_tempo", falhou, "t1"))
+
+    resposta = perguntar(cliente)
+
+    assert resposta.sources == ["NISAR, data não informada"]
+    assert resposta.tools == ["consultar_hotspot", "previsao_tempo"]
+
+
+def test_fontes_do_rascunho_de_alerta(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    alerta = {
+        "rascunho": "…",
+        "fontes": [
+            {"nome": "NISAR", "data": None, "url": "http://x"},
+            {"nome": "Open-Meteo", "data": "2026-11-13", "url": "http://y"},
+        ],
+    }
+    simular(trocas=troca_de_ferramenta("rascunhar_alerta", alerta, "t1"))
+
+    assert perguntar(cliente).sources == ["NISAR, data não informada", "Open-Meteo, 13 nov 2026"]
 
 
 # ---------- falhas: 500 e 504 com corpo no formato do contrato ----------
