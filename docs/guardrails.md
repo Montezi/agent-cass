@@ -117,7 +117,8 @@ Referências confirmadas:
 ## Verificação da saída e repetição
 
 Os dois endpoints fornecem o mesmo callback de verificação ao agente.
-`cass/verificacao.py` confere cada número em `texto` e `medido` com os resultados
+`cass/verificacao.py` confere cada número em `texto`, `medido`, `opcoes` e nos
+textos da hipótese/evidência com os resultados
 das ferramentas, incluindo o hotspot antecipado. Trata formatos PT/EN, datas e
 confiança em porcentagem. IDs, URLs, nomes de fontes, coordenadas, bbox, flags,
 erros e valores nulos não autorizam uma medição. A verificação compara valores;
@@ -129,7 +130,12 @@ confirmados, medido ou hipótese, preservando fontes e aviso de dados de exemplo
 O formato público continua com `paragraphs`, `tools`, `sources` e `note`.
 
 Preparação, decisões de entrada, steering e repetição compartilham o prazo total
-de 20 s. A correção não zera o portão nem repete automaticamente o prefetch.
+de 20 s, incluindo a conferência inicial do ID. A correção não zera o portão
+nem repete automaticamente o prefetch. O Agent limita a pergunta a 8 turnos,
+8192 tokens de saída e 60000 tokens totais acumulados, compartilhando o
+`invocation_context` com a correção. Os limites de tokens do SDK são conferidos
+entre chamadas e dependem do uso informado pelo provedor; uma chamada já iniciada
+pode ultrapassá-los. Cada chamada mantém o teto próprio de 2048 tokens de saída.
 O hook finaliza uma única linha JSON por pergunta, após a verificação, com o tipo
 efetivamente devolvido e o tempo total.
 
@@ -144,25 +150,29 @@ do stream. `/health` e preflight OPTIONS não consomem essa cota.
 O contador usa memória do processo, relógio monotônico e até 10.000 IPs ativos.
 Não é uma cota global entre instâncias/reinícios do Cloud Run.
 
-O IP é o primeiro endereço do `X-Forwarded-For` (`cass.limites.ip_do_cliente`).
-No Cloud Run, `request.client.host` é o proxy do Google, e o endereço de quem
-chamou vem no início desse cabeçalho. Sem o cabeçalho, ou se o primeiro item não
-for um IP, vale o `request.client.host`.
+O IP vem de `request.client.host`; a aplicação ignora `X-Forwarded-For` e os
+entrypoints usam `--no-proxy-headers`. Isso impede renovar a cota trocando um
+cabeçalho. Atrás do Firebase/Cloud Run, visitantes podem compartilhar o peer do
+proxy e a mesma cota. Conferir a cadeia real antes de habilitar confiança em
+endereços encaminhados; não usar confiança irrestrita em cabeçalhos.
 
-**O cabeçalho pode ser falsificado.** Quem chama pode mandar o próprio
-`X-Forwarded-For`, e o primeiro endereço passa a ser o que ele escolheu; trocando
-o valor a cada pedido, ganha cota nova. Este limite só freia o uso casual. O teto
-de custo real é o `--max-instances` do Cloud Run (ver `docs/deploy.md`): o Cloud
-Run não abre instâncias além dele, então os pedidos simultâneos ficam limitados a
-`--max-instances` × `--concurrency` (2 × 80 na variante leve, com a concorrência
-padrão).
+`SegurancaHTTP` admite **4 perguntas simultâneas e 30 por minuto por processo**,
+independentemente do IP. JSON/SSE compartilham essas cotas. A vaga permanece
+ocupada até terminar a resposta/stream e é liberada também no cancelamento.
+Exceder qualquer cota responde 429 e Retry-After. Pedidos inválidos também
+consomem a cota agregada; `/health` e OPTIONS não. Reinícios e múltiplas instâncias
+criam cotas próprias. `max-instances` e `concurrency` não são teto financeiro de
+Vertex AI: ver os limites e ações operacionais em `deploy.md`.
 
 O corpo do POST em `/api/agente` e `/api/agente/stream` tem no máximo **2 KB**
 (2.048 bytes, api-contract.md do frontend). `cass.limites.LimiteDeCorpo` recusa
 com 413 antes de o FastAPI ler o JSON: confere o `Content-Length` e também conta
 os bytes recebidos, para um corpo em pedaços não escapar. A recusa não consome a
 cota por IP e sai com os cabeçalhos de CORS. Uma pergunta de 500 caracteres de
-até 3 bytes em UTF-8 cabe com folga.
+até 3 bytes em UTF-8 cabe com folga. Há prazo de 5 s para receber o corpo;
+esgotá-lo responde 408. A pergunta exige texto não vazio, Unicode válido e
+até 500 unidades UTF-16, como no frontend. Erros de validação mantêm 422,
+sem refletir o conteúdo da pergunta. Respostas recebem `nosniff` e `no-store`.
 
 O `hotspot_id` precisa seguir o formato de id do contrato de dados e ser um dos ids
 do `hotspots.geojson` (api-contract.md do frontend). Fora do formato, a validação
@@ -184,3 +194,15 @@ os testes não exigem números ou evidência que esses dados não fornecem.
 .venv/bin/pytest -q             # testes locais, sem chamadas ao Gemini
 .venv/bin/pytest -q -m gemini   # ADC e configuração Vertex AI; chama o Gemini real
 ```
+
+## Revisão defensiva antes da publicação
+
+Resultados externos têm limite de 1 MiB antes do parse JSON, não seguem redirects
+e exigem `Content-Encoding: identity` para evitar descompressão sem limite.
+O timeout por operação HTTP é 5 s e o tempo decorrido também é conferido entre
+blocos; threads síncronas já iniciadas podem terminar depois do cancelamento.
+A validação recusa medições não finitas e `dias` fora de inteiro 1–7.
+Os handlers de falha registram a classe da exceção, sem sua mensagem/traceback.
+Isso não audita configurações de tracing ou logs de terceiros no Cloud Run.
+
+Relatório, evidências, riscos residuais e checklist: [seguranca.md](seguranca.md).

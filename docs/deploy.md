@@ -147,7 +147,10 @@ gcloud run deploy "$SERVICO" \
   --service-account "$CONTA" \
   --memory=2Gi \
   --cpu=1 \
+  --cpu-throttling \
   --cpu-boost \
+  --concurrency=4 \
+  --max=2 \
   --max-instances=2 \
   --timeout=60 \
   --allow-unauthenticated \
@@ -156,14 +159,31 @@ gcloud run deploy "$SERVICO" \
 ```
 
 Esta é a variante leve, sem o Decider: um só processo, que espera o Gemini a
-maior parte do tempo. Por isso bastam `--memory=2Gi --cpu=1`. Sem
-`--no-cpu-throttling`, o Cloud Run só aloca e cobra CPU enquanto atende um
+maior parte do tempo. A configuração inicial é `--memory=2Gi --cpu=1`. Com
+`--cpu-throttling` explícito, o Cloud Run aloca CPU durante o atendimento de um
 pedido, inclusive durante o stream SSE; o `--cpu-boost` dá CPU extra na subida a
 frio. Os 8 GiB, as 4 CPUs e o `--no-cpu-throttling` são da variante com Decider
 (seção abaixo), que mantém um modelo carregado em memória.
 
-O `--max-instances=2` é o teto de custo real: o limite por IP pode ser contornado
-com um `X-Forwarded-For` falso (ver `docs/guardrails.md`).
+Para a demonstração pública, `--max=2` limita a escala no nível do serviço,
+`--max-instances=2` também limita a revisão e `--concurrency=4` admite até quatro
+pedidos simultâneos por instância. É um ponto inicial conservador: medir latência
+e recusas antes de aumentar. O limite padrão de concorrência do Cloud Run seria
+muito maior. A aplicação admite no máximo quatro perguntas simultâneas e trinta
+por minuto por processo, além da cota por IP. Essas cotas são locais: escalar ou
+reiniciar instâncias muda o orçamento agregado; não representam uma cota global.
+
+**Esses parâmetros não são um teto financeiro para o Gemini.** Mesmo uma instância
+pode continuar chamando a Vertex AI durante todo o dia; o máximo de instâncias
+também admite excessos temporários da plataforma. Defina alertas de orçamento,
+monitore requisições/tokens e confira as cotas disponíveis para o modelo/projeto
+antes de publicar. Orçamentos configurados apenas como alertas não interrompem o
+gasto automaticamente. Para interromper abuso, retire o acesso público ou faça
+rollback/desative a função; não espere que CORS ou o limite de instâncias encerrem
+a cobrança da Vertex AI.
+[Máximo de instâncias](https://docs.cloud.google.com/run/docs/configuring/max-instances),
+[concorrência](https://docs.cloud.google.com/run/docs/about-concurrency),
+[orçamentos e alertas](https://docs.cloud.google.com/billing/docs/how-to/budgets).
 
 O Cloud Build constrói a imagem e a guarda no Artifact Registry. No primeiro
 deploy, o CLI pode pedir para criar o repositório `cloud-run-source-deploy`.
@@ -219,9 +239,34 @@ alcançar `DADOS_BASE`, `api.meteomatics.com` e `api.open-meteo.com`; previsão 
 limitação na resposta.
 
 CORS permite somente `APP_ORIGIN`. JSON e SSE compartilham o limite local de
-10 perguntas/min por IP, com `Retry-After` no HTTP 429. A cota é por processo,
-não global entre instâncias. Confira a identidade de cliente entregue pelo proxy
-na integração publicada. [Detalhes das camadas de proteção](guardrails.md).
+10 perguntas/min por IP, com `Retry-After` no HTTP 429. A aplicação usa o endereço
+da conexão, ignora o `X-Forwarded-For` recebido sem validação e o uvicorn inicia
+com `--no-proxy-headers`. Atrás do Firebase/Cloud Run, vários visitantes podem
+compartilhar o IP do proxy e, portanto, a mesma cota. Confirme esse comportamento
+na publicação. Para recuperar o IP individual, é necessário validar a cadeia de
+proxies confiáveis e suas regras de sobrescrita antes de alterar a configuração;
+não libere confiança em qualquer origem nem no primeiro item do cabeçalho.
+[Detalhes das camadas de proteção](guardrails.md).
+
+### Conferências de segurança antes da publicação
+
+- Confira a revisão efetiva, `DECIDER_ATIVO=false`, a conta de execução
+  `cass-agente`, os limites de instâncias/concorrência e o rewrite do Firebase.
+- A conta de execução usa ADC e `roles/aiplatform.user`; não deve receber os
+  papéis de administrador usados por quem faz o deploy. Revise permissões
+  herdadas no projeto, pois o comando acima não remove concessões antigas.
+- O serviço `agente` serve a `GET /api/clima` e lê `METEOMATICS_USER` e
+  `METEOMATICS_PASSWORD` do Secret Manager, com `--update-secrets` (seções 3 e 5).
+  A conta `cass-agente` recebe `roles/secretmanager.secretAccessor` **somente
+  nesses dois segredos**. Não coloque valores em `--set-env-vars`, no Dockerfile
+  ou no histórico do shell.
+- Gere a imagem leve e confira suas dependências/sistema operacional antes do
+  deploy. A revisão do código não substitui o scanner da imagem que será publicada.
+- Teste uma chamada legítima pelo Firebase e confirme que o modo demo do frontend
+  não está escondendo falhas do backend. Confira também 413, 422, 429 e a política
+  de IP, sem imprimir perguntas, tokens ou credenciais nos logs.
+
+[Referência de segredos no Cloud Run](https://docs.cloud.google.com/run/docs/configuring/services/secrets).
 
 ## 7. Consultar os logs
 
