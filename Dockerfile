@@ -24,7 +24,8 @@ WORKDIR /app
 
 # Dependências primeiro: a camada fica em cache enquanto o requirements.txt não muda.
 COPY requirements.txt requirements-decider.txt ./
-RUN pip install -r requirements.txt \
+RUN python -m pip install --upgrade "pip==26.3" \
+    && pip install -r requirements.txt \
     && if [ "$INCLUIR_DECIDER" = "true" ]; then \
          pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.7.1+cpu" \
          && SETUPTOOLS_SCM_PRETEND_VERSION=0.3.0+git.79bf6e7 pip install -r requirements-decider.txt \
