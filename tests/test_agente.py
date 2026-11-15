@@ -160,7 +160,7 @@ def test_api_agente_responde_sobre_o_guaiba(
 
 
 @pytest.mark.gemini
-def test_pedir_alerta_ativa_a_skill_alerta_whatsapp(
+def test_pedir_alerta_leva_a_skill_alerta_whatsapp(
     dados_servidos: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for nome, valor in dotenv_values(RAIZ / ".env").items():
@@ -192,6 +192,9 @@ def test_pedir_alerta_ativa_a_skill_alerta_whatsapp(
         for bloco in mensagem["content"]
         if "toolUse" in bloco
     ]
+    # "alerta" na pergunta: a skill vai na mensagem, sem gastar uma chamada para ativá-la.
+    primeira = criados[0].messages[0]["content"][0]["text"]
+    assert primeira.startswith("Instruções da skill alerta-whatsapp")
     skills_ativadas = [c["input"].get("skill_name") for c in chamadas if c["name"] == "skills"]
-    assert "alerta-whatsapp" in skills_ativadas
+    assert "alerta-whatsapp" not in skills_ativadas
     assert "rascunhar_alerta" in RespostaAgente.model_validate(http.json()).tools

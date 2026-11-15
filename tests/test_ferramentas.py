@@ -177,8 +177,12 @@ def test_consultar_hotspot(rota: respx.Route) -> None:
     assert resultado["dados_de_exemplo"] is True
     hotspot = resultado["hotspot"]
     assert hotspot["id"] == "guaiba-rs"
-    assert hotspot["enso_effect"]["pt"] == "chuva acima da média"
     assert hotspot["bbox"] == [-51.35, -30.25, -51.0, -29.85]
+
+
+def test_consultar_hotspot_nao_traz_o_enso_effect(rota: respx.Route) -> None:
+    # O enso_effect é contexto da NOAA CPC: só vem por contexto_enso, com essa fonte.
+    assert "enso_effect" not in consultar_hotspot("guaiba-rs")["hotspot"]
 
 
 def test_consultar_hotspot_mantem_os_nulls(rota: respx.Route) -> None:

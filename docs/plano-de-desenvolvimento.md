@@ -331,8 +331,6 @@ acima de 0,7: devolve `fora_do_escopo` pronto, sem chamar o Gemini.
 - `steer_before_tool`: se a ferramenta recebe `id` e não há `hotspot_id` aberto,
   `decider_sim(conversa, "O usuário deixou claro que quer o hotspot X?", padrao=0.0)`
   abaixo de 0,5 vira `Guide("Não adivinhe o hotspot: responda com pergunta_de_volta e as opções.")`.
-- `steer_before_tool`: `rascunhar_alerta` só depois de `consultar_hotspot` e
-  `previsao_tempo` no ledger; senão `Guide`.
 - `steer_after_model` (só na resposta final): se
   `decider_sim(texto, "O texto afirma que o El Niño causou a mudança?", padrao=0.0)` > 0,5,
   `Guide` para reescrever como hipótese. No máximo 1 nova tentativa.

@@ -87,8 +87,12 @@ def simular(
     def instalar(**opcoes: Any) -> AgenteSimulado:
         simulado = AgenteSimulado(**opcoes)
 
-        def criar_agente_simulado(config: Configuracao, idioma: str = "pt") -> AgenteSimulado:
-            criados.append({"config": config, "idioma": idioma})
+        def criar_agente_simulado(
+            config: Configuracao, idioma: str = "pt", skills_injetadas: Any = ()
+        ) -> AgenteSimulado:
+            criados.append(
+                {"config": config, "idioma": idioma, "skills_injetadas": list(skills_injetadas)}
+            )
             return simulado
 
         monkeypatch.setattr(agente, "criar_agente", criar_agente_simulado)
@@ -249,6 +253,53 @@ def test_dados_fora_do_ar_nao_impedem_a_pergunta(
     perguntar(cliente, "O que mudou?", "guaiba-rs")
 
     assert simulado.chamadas[0]["prompt"] == "O que mudou?"
+
+
+# ---------- skills injetadas por palavra-chave ----------
+
+
+def test_pergunta_de_alerta_leva_a_skill_na_mensagem(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+) -> None:
+    simulado = simular()
+
+    perguntar(cliente, "Monte o alerta para o Guaíba")
+
+    mensagem = simulado.chamadas[0]["prompt"]
+    assert mensagem.startswith("Instruções da skill alerta-whatsapp (já ativada;")
+    assert "Chame `rascunhar_alerta`" in mensagem
+    assert "Dados do hotspot aberto no app" in mensagem
+    assert mensagem.endswith("Pergunta: Monte o alerta para o Guaíba")
+    assert criados[0]["skills_injetadas"] == ["alerta-whatsapp"]
+
+
+def test_pergunta_sem_palavra_chave_nao_leva_skill(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+) -> None:
+    simulado = simular()
+
+    perguntar(cliente, "O que mudou?")
+
+    assert "Instruções da skill" not in simulado.chamadas[0]["prompt"]
+    assert criados[0]["skills_injetadas"] == []
+
+
+def test_duas_skills_na_mesma_pergunta(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], criados: list[dict]
+) -> None:
+    simulado = simular()
+
+    perguntar(cliente, "O El Niño causou isso? Como o radar viu?", hotspot_id=None)
+
+    mensagem = simulado.chamadas[0]["prompt"]
+    assert mensagem.index("skill contexto-el-nino") < mensagem.index("skill explicar-radar")
+    assert criados[0]["skills_injetadas"] == ["contexto-el-nino", "explicar-radar"]
 
 
 # ---------- tools e note vêm do que aconteceu, não do modelo ----------

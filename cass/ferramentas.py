@@ -165,10 +165,11 @@ def listar_hotspots() -> dict[str, Any]:
 @tool
 @_erros_como_dado
 def consultar_hotspot(id: str) -> dict[str, Any]:
-    """Consulta um hotspot: classe dominante, área afetada, confiança, data da última
-    passagem do radar, efeito esperado do El Niño e área de interesse.
+    """Consulta o que o radar mediu num hotspot: classe dominante, área afetada,
+    confiança, data da última passagem e área de interesse.
 
-    Valores null ainda não foram medidos.
+    Valores null ainda não foram medidos. O efeito esperado do El Niño vem de
+    contexto_enso.
 
     Args:
         id: id do hotspot, como "guaiba-rs" (os ids vêm de listar_hotspots).
@@ -178,8 +179,9 @@ def consultar_hotspot(id: str) -> dict[str, Any]:
     return {
         "fonte": _fonte(FONTE_RADAR, p.last_pass, url),
         "dados_de_exemplo": colecao.metadata.sample,
-        # mode="json": datas viram texto e os nulls continuam lá.
-        "hotspot": p.model_dump(mode="json"),
+        # mode="json": datas viram texto e os nulls continuam lá. O enso_effect fica
+        # de fora: é contexto da NOAA CPC, não medição do NISAR (vem de contexto_enso).
+        "hotspot": p.model_dump(mode="json", exclude={"enso_effect"}),
     }
 
 

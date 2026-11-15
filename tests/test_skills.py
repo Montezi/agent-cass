@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from cass.agente import PASTA_DAS_SKILLS, carregar_skills, criar_agente
+from cass.agente import PASTA_DAS_SKILLS, carregar_skills, criar_agente, skills_da_pergunta
 from cass.config import Configuracao, carregar_config
 
 NOMES = ["alerta-whatsapp", "contexto-el-nino", "explicar-radar", "medido-vs-hipotese"]
@@ -85,6 +85,48 @@ def test_skill_desconhecida_nao_le_nada(config: Configuracao) -> None:
 
     assert "not found" in texto
     assert "GOOGLE_CLOUD_PROJECT" not in texto
+
+
+# ---------- injeção por palavra-chave ----------
+
+
+@pytest.mark.parametrize(
+    ("pergunta", "esperado"),
+    [
+        ("Monte o alerta para o Rio Negro", ["alerta-whatsapp"]),
+        ("Quero mandar no WhatsApp", ["alerta-whatsapp"]),
+        ("Send an alert about Kariba", ["alerta-whatsapp"]),
+        ("Tem alertas para Bornéu?", ["alerta-whatsapp"]),
+        ("O El Niño causou a cheia?", ["contexto-el-nino"]),
+        ("o el nino tem a ver com isso?", ["contexto-el-nino"]),
+        ("O que causou a seca?", ["contexto-el-nino"]),
+        ("Did El Niño cause the fire?", ["contexto-el-nino"]),
+        ("Como o radar vê através da fumaça?", ["explicar-radar"]),
+        ("O que é HH e HV?", ["explicar-radar"]),
+        ("Monte um alerta: o El Niño causou isso? E o radar?", ["alerta-whatsapp", "contexto-el-nino", "explicar-radar"]),
+        ("O que mudou no Guaíba?", []),
+        ("Vai chover nos próximos dias?", []),
+        ("Ele foi alertado? Os radares?", []),  # só as palavras inteiras contam
+    ],
+)
+def test_skills_da_pergunta(pergunta: str, esperado: list[str]) -> None:
+    assert skills_da_pergunta(pergunta) == esperado
+
+
+def test_skill_injetada_sai_do_plugin_e_as_outras_ficam(config: Configuracao) -> None:
+    agente = criar_agente(config, skills_injetadas=["alerta-whatsapp"])
+
+    injetada = agente.tool.skills(skill_name="alerta-whatsapp", record_direct_tool_call=False)
+    outra = agente.tool.skills(skill_name="explicar-radar", record_direct_tool_call=False)
+
+    assert "not found" in injetada["content"][0]["text"]
+    assert outra["content"][0]["text"].startswith(instrucoes("explicar-radar"))
+
+
+def test_sem_skill_sobrando_o_agente_fica_sem_o_plugin(config: Configuracao) -> None:
+    agente = criar_agente(config, skills_injetadas=NOMES)
+
+    assert "skills" not in agente.tool_names
 
 
 # ---------- conteúdo que as regras exigem ----------
