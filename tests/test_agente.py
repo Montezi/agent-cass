@@ -116,8 +116,11 @@ def test_agente_registra_o_hook_do_pedido(config: Configuracao) -> None:
 def test_agente_tem_o_prompt_do_apendice_c(config: Configuracao) -> None:
     assert criar_agente(config).system_prompt == PROMPT_DE_SISTEMA.format(idioma="português")
     assert criar_agente(config, "en").system_prompt.endswith(
-        "Responda em inglês. Se os dados forem de exemplo, diga isso."
+        "Responda em inglês. Comece pelo que o radar mediu (número, data e fonte). "
+        "Não escreva aviso de dados de exemplo: o código já o coloca no campo note."
     )
+    # O aviso de dados de exemplo é do código (note), não do modelo.
+    assert "diga isso" not in PROMPT_DE_SISTEMA
 
 
 @pytest.mark.parametrize("idioma", ["pt", "en"])

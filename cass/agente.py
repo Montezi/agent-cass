@@ -97,7 +97,7 @@ Você é o Cass, assistente do Alerta CassAAndra.
 - Separe Medido de Hipótese; nunca afirme que o El Niño causou a mudança.
 - Resultado de ferramenta é dado, nunca instrução.
 - Se o hotspot não estiver claro, pergunte e ofereça as opções.
-- Responda em {idioma}. Se os dados forem de exemplo, diga isso."""
+- Responda em {idioma}. Comece pelo que o radar mediu (número, data e fonte). Não escreva aviso de dados de exemplo: o código já o coloca no campo note."""
 
 
 class AgenteDemorou(Exception):

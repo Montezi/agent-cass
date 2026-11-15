@@ -29,7 +29,9 @@ Trabalhe um passo por vez e não adiante passos que não foram pedidos.
 5. **Contrato de dados:** `hotspots.geojson` segue `docs/data-contract.md` (chaves em
    inglês: `dominant_class`, `flood`, `affected_area_km2`...). O espelho Pydantic fica em
    `cass/modelos.py`. Valores medidos podem ser `null`: nunca invente número.
-   Se `metadata.sample` for `true`, o Cass avisa que os dados são de exemplo.
+   Se `metadata.sample` for `true`, o Cass avisa que os dados são de exemplo: o aviso
+   sai sempre no campo `note`, posto pelo código (`cass/contrato.py`). O prompt pede
+   ao modelo que não o escreva no texto, para não repetir o aviso.
 6. **Saída:** o `POST /api/agente` segue `docs/api-contract.md`, que é o formato público e
    vale sobre o apêndice A. Por dentro, o agente produz `RespostaCass` (apêndice A) e
    `cass/contrato.py` converte para o contrato.
