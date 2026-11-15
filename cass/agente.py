@@ -14,6 +14,7 @@ from google import genai
 from strands import Agent, AgentSkills, Skill
 from strands.interventions import Deny
 from strands.models.gemini import GeminiModel
+from strands.types.exceptions import MaxTokensReachedException
 
 from cass.config import Configuracao
 from cass.ferramentas import (
@@ -30,7 +31,13 @@ from cass.hooks import ProgressoERegistro
 from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
 from cass.steering import SteeringCass
-from cass.verificacao import Verificacao, cita_area_afetada, resposta_segura, valores_confirmados
+from cass.verificacao import (
+    Verificacao,
+    cita_area_afetada,
+    hotspots_dos_resultados,
+    resposta_segura,
+    valores_confirmados,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +47,11 @@ TEMPERATURA = 0.2
 # Com low, a mediana caiu de ~10 s para ~3 a 5 s, sem perder qualidade nos testes.
 NIVEL_DE_PENSAMENTO = "low"
 # Teto por chamada ao modelo, contando o pensamento. Com low, as respostas usam menos
-# de 300; o teto só corta um raciocínio descontrolado (que viraria resposta incompleta).
-MAX_TOKENS_DE_SAIDA = 2048
-# Limites do pedido inteiro, incluindo uma eventual correção de saída.
+# de 300; o teto só corta um raciocínio descontrolado. Se ainda assim cortar
+# (MaxTokensReachedException), responder devolve a resposta segura com os dados.
+MAX_TOKENS_DE_SAIDA = 4096
+# Limites do pedido inteiro, incluindo uma eventual correção de saída. MAX_TOKENS_GERADOS
+# cabe duas chamadas no teto (a resposta e a correção).
 # Confirmados no SDK 1.65.0 e na referência oficial de strands.types.agent.Limits.
 MAX_TURNOS = 8
 MAX_TOKENS_GERADOS = 8192
@@ -253,26 +262,33 @@ async def responder(
             mensagem = _mensagem(pedido.question, hotspot, injetadas)
             contexto_invocacao = None
             for tentativa in range(2):
-                resultado = await agente.invoke_async(
-                    mensagem,
-                    structured_output_model=RespostaDoModelo,
-                    limits={
-                        "turns": MAX_TURNOS,
-                        "output_tokens": MAX_TOKENS_GERADOS,
-                        "total_tokens": MAX_TOKENS_TOTAIS,
-                        "structured_output_attempts": TENTATIVAS_DE_SAIDA,
-                    },
-                    invocation_context=contexto_invocacao,
-                )
+                try:
+                    resultado = await agente.invoke_async(
+                        mensagem,
+                        structured_output_model=RespostaDoModelo,
+                        limits={
+                            "turns": MAX_TURNOS,
+                            "output_tokens": MAX_TOKENS_GERADOS,
+                            "total_tokens": MAX_TOKENS_TOTAIS,
+                            "structured_output_attempts": TENTATIVAS_DE_SAIDA,
+                        },
+                        invocation_context=contexto_invocacao,
+                    )
+                except MaxTokensReachedException:
+                    # A resposta foi cortada no teto. Com um hotspot já consultado, a
+                    # resposta montada pelo código é útil; sem ele, segue o erro (500).
+                    resultados, usadas = _coletados(agente, hotspot, portao.negadas | steering.negadas)
+                    if not hotspots_dos_resultados(resultados):
+                        raise
+                    logger.warning("limite de tokens; resposta segura")
+                    segura = resposta_segura(_resposta_vazia(pedido, resultados), resultados)
+                    tipo = segura.tipo
+                    return segura, usadas
                 do_modelo = resultado.structured_output
                 if not isinstance(do_modelo, RespostaDoModelo):
                     raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
 
-                buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
-                negadas = portao.negadas | steering.negadas
-                resultados = [*buscado, *_resultados_das_ferramentas(agente.messages, negadas)]
-                chamadas = _ferramentas_chamadas(agente.messages, negadas)
-                usadas = list(dict.fromkeys([n for n, _ in buscado] + chamadas))
+                resultados, usadas = _coletados(agente, hotspot, portao.negadas | steering.negadas)
                 resposta = RespostaCass(
                     **do_modelo.model_dump(exclude={"hipotese"}),
                     hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
@@ -307,6 +323,29 @@ async def responder(
     finally:
         # Inclui preparação, correção e resposta segura, também nas falhas.
         progresso.finalizar(tipo)
+
+
+def _coletados(
+    agente: Agent, hotspot: dict[str, Any] | None, negadas: Collection[str]
+) -> tuple[list[Resultado], list[str]]:
+    """Resultados das ferramentas (com o hotspot antecipado primeiro) e as ferramentas usadas."""
+    buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
+    resultados = [*buscado, *_resultados_das_ferramentas(agente.messages, negadas)]
+    chamadas = _ferramentas_chamadas(agente.messages, negadas)
+    return resultados, list(dict.fromkeys([n for n, _ in buscado] + chamadas))
+
+
+def _resposta_vazia(pedido: PedidoAgente, resultados: list[Resultado]) -> RespostaCass:
+    """Base da resposta segura quando o modelo não chegou a responder: só idioma, fontes
+    e aviso de dados de exemplo, tirados dos resultados."""
+    return RespostaCass(
+        tipo="erro",
+        idioma=pedido.language,
+        texto="",
+        confianca="baixa",
+        fontes=_fontes(resultados),
+        dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
+    )
 
 
 def _mensagem_de_correcao(

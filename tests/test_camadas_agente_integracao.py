@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 from strands import tool
+from strands.types.exceptions import MaxTokensReachedException
 
 from cass import agente as modulo_agente
 from cass import main
@@ -335,3 +336,112 @@ def test_numero_em_erro_de_ferramenta_nao_confirma_uma_medicao(
     assert "999" not in resposta.texto
     extraidos = modulo_agente._resultados_das_ferramentas(criados[0]["agente"].messages)
     assert extraidos == []
+
+
+# ---------- limite de tokens de saída ----------
+
+
+class ModeloQueEstoura(ModeloProgramado):
+    """Um passo "max_tokens" no roteiro corta a resposta no teto de tokens de saída."""
+
+    async def stream(self, messages: Any, *args: Any, **kwargs: Any):
+        if not self.roteiro or self.roteiro[0] != "max_tokens":
+            async for evento in super().stream(messages, *args, **kwargs):
+                yield evento
+            return
+        self.recebidas.append(deepcopy(messages))
+        self.roteiro.pop(0)
+        yield {"messageStart": {"role": "assistant"}}
+        yield {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}}
+        yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "Texto cortado pelo limite"}}}
+        yield {"contentBlockStop": {"contentBlockIndex": 0}}
+        yield {"messageStop": {"stopReason": "max_tokens"}}
+        yield {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                            "metrics": {"latencyMs": 1}}}
+
+
+INICIO_SEGURO = "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **212 km²** de cheia em Lago Guaíba, RS."
+
+
+def test_limite_de_tokens_com_hotspot_aberto_vira_resposta_segura(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str],
+) -> None:
+    caplog.set_level("WARNING", logger="cass.agente")
+    modelo = ModeloQueEstoura(["max_tokens"])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = medido()
+
+    resposta, ferramentas = asyncio.run(modulo_agente.responder(
+        PEDIDO, carregar_config(), validar=validar_resposta,
+    ))
+
+    assert modelo.roteiro == []
+    assert resposta.texto.startswith(INICIO_SEGURO)
+    assert resposta.confianca == "baixa" and resposta.dados_de_exemplo is True
+    assert ferramentas == ["consultar_hotspot"]
+    publica = para_contrato(resposta, ferramentas)
+    assert publica.sources == ["NISAR, 12 nov 2026"]
+    assert [r.getMessage() for r in caplog.records] == ["limite de tokens; resposta segura"]
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["tipo"] == "resposta"
+
+
+def test_limite_de_tokens_usa_o_hotspot_que_o_modelo_consultou(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @tool
+    async def consultar_hotspot(id: str) -> dict:
+        """Medição local do Guaíba."""
+        return medido()
+
+    modelo = ModeloQueEstoura([[chamada("consultar_hotspot", "consulta", id="guaiba-rs")], "max_tokens"])
+    _, prefetch = configurar(monkeypatch, modelo, [consultar_hotspot])
+    prefetch.return_value = None  # nada antecipado: o hotspot vem só da ferramenta
+
+    resposta, ferramentas = asyncio.run(modulo_agente.responder(
+        PEDIDO, carregar_config(), validar=validar_resposta,
+    ))
+
+    assert modelo.roteiro == []
+    assert resposta.texto.startswith(INICIO_SEGURO)
+    assert ferramentas == ["consultar_hotspot"]
+
+
+def test_limite_de_tokens_na_correcao_tambem_vira_resposta_segura(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modelo = ModeloQueEstoura([[saida("inventada", "O radar mediu **999 km²**.")], "max_tokens"])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = medido()
+
+    resposta, _ = asyncio.run(modulo_agente.responder(PEDIDO, carregar_config(), validar=validar_resposta))
+
+    assert modelo.roteiro == []
+    assert resposta.texto.startswith(INICIO_SEGURO)
+    assert "999" not in resposta.model_dump_json()
+
+
+def test_limite_de_tokens_sem_hotspot_segue_como_erro(monkeypatch: pytest.MonkeyPatch) -> None:
+    modelo = ModeloQueEstoura(["max_tokens"])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = None
+
+    with pytest.raises(MaxTokensReachedException):
+        asyncio.run(modulo_agente.responder(PEDIDO, carregar_config(), validar=validar_resposta))
+
+
+@pytest.mark.parametrize(("antecipado", "status"), [(True, 200), (False, 500)])
+def test_endpoint_no_limite_de_tokens(
+    monkeypatch: pytest.MonkeyPatch, ids_conhecidos: list[str], antecipado: bool, status: int,
+) -> None:
+    modelo = ModeloQueEstoura(["max_tokens"])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = medido() if antecipado else None
+
+    with TestClient(main.app) as cliente:
+        http = cliente.post("/api/agente", json=PEDIDO.model_dump())
+
+    assert http.status_code == status
+    corpo = RespostaAgente.model_validate(http.json())
+    if antecipado:
+        assert corpo.paragraphs[0].startswith(INICIO_SEGURO)
+        assert "Texto cortado" not in http.text

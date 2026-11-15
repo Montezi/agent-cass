@@ -520,7 +520,7 @@ def resposta_segura(resposta: RespostaCass, resultados: list[Resultado]) -> Resp
     """
     t = TEXTOS_SEGUROS[resposta.idioma]
     paragrafos: list[str] = []
-    for p in _hotspots_dos_resultados(resultados)[:MAX_HOTSPOTS_NA_SEGURA]:
+    for p in hotspots_dos_resultados(resultados)[:MAX_HOTSPOTS_NA_SEGURA]:
         paragrafo = _paragrafo_do_hotspot(p, resposta.idioma)
         if len("\n\n".join([*paragrafos, paragrafo, t["fim"]])) <= MAX_CARACTERES_TEXTO:
             paragrafos.append(paragrafo)
@@ -536,7 +536,7 @@ def resposta_segura(resposta: RespostaCass, resultados: list[Resultado]) -> Resp
     )
 
 
-def _hotspots_dos_resultados(resultados: list[Resultado]) -> list[dict[str, Any]]:
+def hotspots_dos_resultados(resultados: list[Resultado]) -> list[dict[str, Any]]:
     """As propriedades de cada hotspot consultado com sucesso, na ordem e sem repetir o id."""
     hotspots: dict[str, dict[str, Any]] = {}
     for _, dados in resultados:
@@ -587,7 +587,7 @@ def valores_confirmados(resultados: list[Resultado], idioma: Idioma) -> list[tup
     hotspot sem nenhum valor.
     """
     confirmados: list[tuple[str, list[str]]] = []
-    for p in _hotspots_dos_resultados(resultados)[:MAX_HOTSPOTS_NA_SEGURA]:
+    for p in hotspots_dos_resultados(resultados)[:MAX_HOTSPOTS_NA_SEGURA]:
         area, confianca = _medida(p.get("affected_area_km2")), _medida(p.get("confidence"))
         limiar = _medida(p.get("threshold_db"))
         valores = [
@@ -615,7 +615,7 @@ def cita_area_afetada(resposta: RespostaCass, resultados: list[Resultado]) -> bo
     Verdadeiro também quando nenhuma área foi medida (null): não há o que citar.
     """
     areas: set[Decimal] = set()
-    for p in _hotspots_dos_resultados(resultados):
+    for p in hotspots_dos_resultados(resultados):
         area = _medida(p.get("affected_area_km2"))
         if area is not None:
             areas.update({Decimal(str(area)), Decimal(formatar_numero(area, "en"))})

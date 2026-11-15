@@ -64,7 +64,14 @@ def test_modelo_limita_o_pensamento_e_a_saida(config: Configuracao) -> None:
     params = criar_modelo(config).get_config()["params"]
 
     assert params["thinking_config"] == {"thinking_level": "low"}
-    assert params["max_output_tokens"] == 2048
+    assert params["max_output_tokens"] == 4096
+
+
+def test_orcamento_do_pedido_cabe_duas_chamadas_no_teto() -> None:
+    # A resposta e a correção podem, cada uma, usar o teto inteiro de uma chamada.
+    from cass.agente import MAX_TOKENS_DE_SAIDA, MAX_TOKENS_GERADOS
+
+    assert MAX_TOKENS_GERADOS >= 2 * MAX_TOKENS_DE_SAIDA
 
 
 def test_parametros_viram_um_generate_content_config_valido(config: Configuracao) -> None:
@@ -75,7 +82,7 @@ def test_parametros_viram_um_generate_content_config_valido(config: Configuracao
 
     assert gerado.thinking_config is not None
     assert gerado.thinking_config.thinking_level == types.ThinkingLevel.LOW
-    assert gerado.max_output_tokens == 2048
+    assert gerado.max_output_tokens == 4096
 
 
 def test_modelo_e_reaproveitado(config: Configuracao) -> None:

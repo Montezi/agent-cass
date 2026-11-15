@@ -159,7 +159,12 @@ nem repete automaticamente o prefetch. O Agent limita a pergunta a 8 turnos,
 8192 tokens de saída e 60000 tokens totais acumulados, compartilhando o
 `invocation_context` com a correção. Os limites de tokens do SDK são conferidos
 entre chamadas e dependem do uso informado pelo provedor; uma chamada já iniciada
-pode ultrapassá-los. Cada chamada mantém o teto próprio de 2048 tokens de saída.
+pode ultrapassá-los. Cada chamada mantém o teto próprio de 4096 tokens de saída;
+os 8192 do pedido cabem a resposta e a correção no teto. Se uma chamada for
+cortada no teto (`MaxTokensReachedException`, de `strands.types.exceptions`) e já
+houver um hotspot nos resultados (antecipado ou consultado), o pedido devolve a
+resposta montada pelo código e registra "limite de tokens; resposta segura" no
+log; sem hotspot, segue como erro 500.
 O hook finaliza uma única linha JSON por pergunta, após a verificação, com o tipo
 efetivamente devolvido e o tempo total.
 
