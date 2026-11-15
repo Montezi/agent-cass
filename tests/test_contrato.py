@@ -212,3 +212,113 @@ def test_resposta_de_erro_no_formato_do_contrato(idioma: str, trecho: str) -> No
     assert RespostaAgente.model_validate(erro.model_dump()) == erro
     assert trecho in erro.paragraphs[0]
     assert (erro.tools, erro.sources, erro.note) == ([], [], None)
+
+
+# ---------- limites do contrato (agentAnswerSchema do frontend) ----------
+
+BASE_CONTRATO: dict[str, Any] = {"paragraphs": ["Oi."], "tools": [], "sources": []}
+
+
+def test_resposta_no_limite_e_aceita() -> None:
+    RespostaAgente.model_validate(
+        {
+            "paragraphs": ["p" * 2000] * 12,
+            "tools": [f"f{i:02d}" + "x" * 57 for i in range(10)],
+            "sources": ["s" * 200] * 10,
+            "note": "n" * 500,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "campos",
+    [
+        pytest.param({"paragraphs": ["p"] * 13}, id="13-paragrafos"),
+        pytest.param({"paragraphs": ["p" * 2001]}, id="paragrafo-2001"),
+        # O zod conta como o JavaScript: cada emoji vale 2 (1.001 emojis = 2.002).
+        pytest.param({"paragraphs": ["🌧" * 1001]}, id="paragrafo-em-utf16"),
+        pytest.param({"tools": [f"f{i}" for i in range(11)]}, id="11-ferramentas"),
+        pytest.param({"tools": ["f" * 61]}, id="ferramenta-61"),
+        pytest.param({"tools": ["consultar_hotspot", "consultar_hotspot"]}, id="repetida"),
+        pytest.param({"sources": [f"s{i}" for i in range(11)]}, id="11-fontes"),
+        pytest.param({"sources": ["s" * 201]}, id="fonte-201"),
+        pytest.param({"note": "n" * 501}, id="nota-501"),
+    ],
+)
+def test_resposta_fora_do_limite_e_recusada(campos: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        RespostaAgente.model_validate({**BASE_CONTRATO, **campos})
+
+
+def resposta_longa() -> RespostaCass:
+    """Tudo acima do limite: 30 parágrafos, medido e hipótese enormes, 50 opções e 25 fontes."""
+    return cass(
+        texto="\n\n".join(f"Parágrafo {i}." for i in range(1, 31)),
+        medido=[f"**{i} km²** de água nova na passagem {i} do radar." for i in range(80)],
+        hipotese={"texto": "chuva acima da média " * 150, "evidencia": "série " * 100, "forca": "fraca"},
+        opcoes=[f"Hotspot de exemplo número {i}" for i in range(50)],
+        fontes=[
+            {"nome": f"Fonte {i} " + "com nome muito comprido " * 10, "data": "2026-11-12", "ferramenta": "t"}
+            for i in range(25)
+        ],
+        dados_de_exemplo=True,
+    )
+
+
+FERRAMENTAS_DEMAIS = [
+    *(f"ferramenta_{i}" for i in range(12)),
+    "ferramenta_0",
+    "consultar_hotspot_" + "x" * 80,
+]
+
+
+def test_resposta_longa_ainda_sai_valida() -> None:
+    contrato = para_contrato(resposta_longa(), FERRAMENTAS_DEMAIS)
+
+    # Passa de novo pela validação, como o app faria com o JSON.
+    RespostaAgente.model_validate_json(contrato.model_dump_json())
+    assert len(contrato.paragraphs) == 12
+    assert all(len(p) <= 2000 for p in contrato.paragraphs)
+    assert len(contrato.tools) == 10 and len(set(contrato.tools)) == 10
+    assert all(len(f) <= 60 for f in contrato.tools)
+    assert len(contrato.sources) == 10 and all(len(s) <= 200 for s in contrato.sources)
+
+
+def test_excedente_do_texto_vai_para_o_ultimo_paragrafo_do_texto() -> None:
+    paragrafos = para_contrato(resposta_longa(), []).paragraphs
+
+    # 3 extras (Medido, Hipótese, Opções) deixam 9 vagas para o texto.
+    assert paragrafos[:8] == [f"Parágrafo {i}." for i in range(1, 9)]
+    assert paragrafos[8] == " ".join(f"Parágrafo {i}." for i in range(9, 31))
+    assert paragrafos[9].startswith("Medido: **0 km²**")
+    assert paragrafos[10].startswith("Hipótese (força fraca): chuva")
+    assert paragrafos[11].startswith("Opções: Hotspot de exemplo número 0")
+
+
+def test_paragrafo_cortado_termina_com_reticencias_sem_negrito_aberto() -> None:
+    medido = para_contrato(resposta_longa(), []).paragraphs[9]
+
+    assert len(medido) <= 2000
+    assert medido.endswith("…")
+    assert medido.count("**") % 2 == 0
+
+
+def test_ferramentas_sem_repeticao_e_na_ordem() -> None:
+    tools = para_contrato(cass(), ["consultar_hotspot", "previsao_tempo", "consultar_hotspot"]).tools
+
+    assert tools == ["consultar_hotspot", "previsao_tempo"]
+
+
+def test_corte_conta_emojis_como_o_javascript() -> None:
+    contrato = para_contrato(cass(medido=["🌧" * 1500]), [])
+
+    medido = contrato.paragraphs[-1]
+    assert len(medido.encode("utf-16-le")) // 2 <= 2000
+    RespostaAgente.model_validate_json(contrato.model_dump_json())
+
+
+def test_resposta_curta_nao_muda() -> None:
+    contrato = para_contrato(cass(texto="Um.\n\nDois."), ["consultar_hotspot"])
+
+    assert contrato.paragraphs == ["Um.", "Dois."]
+    assert contrato.tools == ["consultar_hotspot"]

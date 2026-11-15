@@ -179,12 +179,55 @@ class PedidoAgente(BaseModel):
     language: Literal["pt", "en"]
 
 
+# Limites do agentAnswerSchema (e do api-contract.md do frontend): uma resposta maior
+# conta como fora do contrato e o app cai no modo demo.
+MAX_PARAGRAFOS = 12
+MAX_CARACTERES_PARAGRAFO = 2000
+MAX_FERRAMENTAS = 10
+MAX_CARACTERES_FERRAMENTA = 60
+MAX_FONTES = 10
+MAX_CARACTERES_FONTE = 200
+MAX_CARACTERES_NOTA = 500
+
+
+def tamanho_js(texto: str) -> int:
+    """Tamanho como o zod e o JavaScript contam (String.length): unidades UTF-16.
+
+    Um emoji fora do plano básico conta 2; len() do Python contaria 1.
+    """
+    return len(texto.encode("utf-16-le")) // 2
+
+
+def _no_maximo(limite: int) -> AfterValidator:
+    def validar(texto: str) -> str:
+        if tamanho_js(texto) > limite:
+            raise ValueError(f"no máximo {limite} caracteres")
+        return texto
+
+    return AfterValidator(validar)
+
+
 class RespostaAgente(BaseModel):
     # **texto** marca o número medido em negrito; sem HTML (o app escapa).
-    paragraphs: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
-    tools: list[str]  # ferramentas chamadas, mostradas como chips
-    sources: list[str]  # fontes com data: "NISAR GCOV, 12 nov 2026"
-    note: str | None = None  # aviso opcional
+    paragraphs: list[
+        Annotated[str, Field(min_length=1), _no_maximo(MAX_CARACTERES_PARAGRAFO)]
+    ] = Field(min_length=1, max_length=MAX_PARAGRAFOS)
+    # Ferramentas chamadas, mostradas como chips; sem repetição.
+    tools: list[Annotated[str, _no_maximo(MAX_CARACTERES_FERRAMENTA)]] = Field(
+        max_length=MAX_FERRAMENTAS
+    )
+    # Fontes com data: "NISAR GCOV, 12 nov 2026".
+    sources: list[Annotated[str, _no_maximo(MAX_CARACTERES_FONTE)]] = Field(
+        max_length=MAX_FONTES
+    )
+    note: Annotated[str, _no_maximo(MAX_CARACTERES_NOTA)] | None = None  # aviso opcional
+
+    @field_validator("tools")
+    @classmethod
+    def _ferramentas_sem_repeticao(cls, tools: list[str]) -> list[str]:
+        if len(set(tools)) != len(tools):
+            raise ValueError("ferramentas repetidas")
+        return tools
 
 
 # ---------- Formato interno do agente (apêndice A do plano) ----------
