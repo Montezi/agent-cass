@@ -256,6 +256,23 @@ def test_consultar_hotspot_data_da_fonte_e_o_last_pass(respx_mock: respx.MockRou
     assert_e_json(resultado)
 
 
+def test_consultar_hotspot_traz_baseline_pass_e_threshold_db(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(URL).mock(
+        return_value=httpx.Response(200, json=fixture_com(baseline_pass="2026-01-14", threshold_db=3))
+    )
+
+    hotspot = consultar_hotspot("guaiba-rs")["hotspot"]
+
+    assert hotspot["baseline_pass"] == "2026-01-14"
+    assert hotspot["threshold_db"] == 3
+
+
+def test_consultar_hotspot_sem_baseline_pass_mostra_null(rota: respx.Route) -> None:
+    hotspot = consultar_hotspot("guaiba-rs")["hotspot"]
+
+    assert hotspot["baseline_pass"] is None and hotspot["threshold_db"] is None
+
+
 # ---------- explicar_classe, hipotese, exposicao: sem stats ainda ----------
 
 

@@ -89,6 +89,10 @@ class Propriedades(_Contrato):
     affected_area_km2: Annotated[Numero, Field(ge=0)] | None
     confidence: Annotated[Numero, Field(ge=0, le=1)] | None
     last_pass: DataAaaaMmDd | None
+    # Passagem "antes" e limiar (2, 3 ou 4 dB) da affected_area_km2. No zod são
+    # anuláveis e obrigatórios; aqui ficam opcionais, para aceitar arquivos sem eles.
+    baseline_pass: DataAaaaMmDd | None = None
+    threshold_db: Annotated[Numero, Field(gt=0)] | None = None
     # [west, south, east, north]; nenhum hotspot cruza o meridiano de 180°.
     bbox: tuple[Longitude, Latitude, Longitude, Latitude]
     # Nome da lente -> PNG relativo a /dados/.

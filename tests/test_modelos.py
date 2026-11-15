@@ -1,6 +1,7 @@
 """Testes do espelho Pydantic do contrato de dados (docs/data-contract.md)."""
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 from cass.modelos import ColecaoHotspots
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
+CONTRATO = Path(__file__).parent.parent / "docs" / "data-contract.md"
 IDS_DO_PROJETO = [
     "norte-fire-ca",
     "costa-peru",
@@ -61,37 +63,20 @@ def test_fixture_e_valido(dados: dict[str, Any]) -> None:
 
 
 def test_exemplo_do_contrato_e_valido() -> None:
-    exemplo = {
-        "type": "FeatureCollection",
-        "metadata": {"sample": False},
-        "features": [
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [-51.2, -30.0]},
-                "properties": {
-                    "id": "guaiba-rs",
-                    "name": {"pt": "Lago Guaíba, RS", "en": "Guaíba Lake, RS (Brazil)"},
-                    "enso_effect": {
-                        "pt": "chuva acima da média",
-                        "en": "above-average rainfall",
-                    },
-                    "dominant_class": "flood",
-                    "affected_area_km2": 412.5,
-                    "confidence": 0.87,
-                    "last_pass": "2026-11-12",
-                    "bbox": [-51.3, -30.2, -51.0, -29.9],
-                    "layers": {"flood": "layers/guaiba-rs/flood.png"},
-                },
-            }
-        ],
-    }
+    # O primeiro bloco JSON do docs/data-contract.md (cópia do contrato do frontend).
+    bloco = re.search(r"```json\n(.*?)\n```", CONTRATO.read_text(encoding="utf-8"), re.DOTALL)
+    assert bloco is not None
+    exemplo = json.loads(bloco[1])
 
     p = ColecaoHotspots.model_validate(exemplo).features[0].properties
 
+    assert p.id == "guaiba-rs"
     assert p.dominant_class == "flood"
-    assert p.affected_area_km2 == 412.5
-    assert p.confidence == 0.87
+    assert p.affected_area_km2 == 212
+    assert p.confidence == 0.86
     assert p.last_pass == date(2026, 11, 12)
+    assert p.baseline_pass == date(2026, 1, 14)
+    assert p.threshold_db == 3
     assert p.layers == {"flood": "layers/guaiba-rs/flood.png"}
 
 
@@ -214,6 +199,46 @@ def test_campo_anulavel_ainda_e_obrigatorio(dados: dict[str, Any], campo: str) -
     del props(dados)[campo]
 
     assert_rejeita(dados, (*PROPS, campo))
+
+
+# ---------- baseline_pass e threshold_db (opcionais) ----------
+
+
+def test_baseline_pass_e_threshold_db_sao_opcionais(dados: dict[str, Any]) -> None:
+    p = ColecaoHotspots.model_validate(dados).features[GUAIBA].properties
+
+    assert p.baseline_pass is None and p.threshold_db is None
+
+
+def test_baseline_pass_e_threshold_db_sao_lidos(dados: dict[str, Any]) -> None:
+    props(dados).update(baseline_pass="2026-01-14", threshold_db=3)
+
+    p = ColecaoHotspots.model_validate(dados).features[GUAIBA].properties
+
+    assert p.baseline_pass == date(2026, 1, 14)
+    assert p.threshold_db == 3
+
+
+def test_baseline_pass_e_threshold_db_aceitam_null(dados: dict[str, Any]) -> None:
+    props(dados).update(baseline_pass=None, threshold_db=None)
+
+    p = ColecaoHotspots.model_validate(dados).features[GUAIBA].properties
+
+    assert p.baseline_pass is None and p.threshold_db is None
+
+
+@pytest.mark.parametrize("valor", ["14/01/2026", "2026-01-14T00:00:00Z", "2026-1-14", "2026-02-30", 20260114])
+def test_baseline_pass_fora_do_formato(dados: dict[str, Any], valor: object) -> None:
+    props(dados)["baseline_pass"] = valor
+
+    assert_rejeita(dados, (*PROPS, "baseline_pass"))
+
+
+@pytest.mark.parametrize("valor", [0, -3, "3", True, float("nan"), float("inf")])
+def test_threshold_db_precisa_ser_numero_positivo(dados: dict[str, Any], valor: object) -> None:
+    props(dados)["threshold_db"] = valor
+
+    assert_rejeita(dados, (*PROPS, "threshold_db"))
 
 
 # ---------- nome ----------

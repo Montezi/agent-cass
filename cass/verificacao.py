@@ -27,8 +27,8 @@ _IGNORAR = frozenset({
 })
 _FONTES = frozenset({"fonte", "fontes", "source", "sources", "provenance"})
 _CAMPOS_DATA = frozenset({
-    "date", "data", "last_pass", "updated_at", "atualizada_em", "baseline_date",
-    "radar_through",
+    "date", "data", "last_pass", "baseline_pass", "updated_at", "atualizada_em",
+    "baseline_date", "radar_through",
 })
 _TEXTOS_COM_DADOS = frozenset({
     "texto", "text", "evidencia", "evidence", "value", "valor", "note", "nota",

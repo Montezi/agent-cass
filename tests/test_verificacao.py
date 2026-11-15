@@ -393,3 +393,20 @@ def test_resposta_aprovada_nao_vai_para_o_log(caplog: pytest.LogCaptureFixture) 
     validar_resposta(resposta("Área de 212 km²."), dados({"affected_area_km2": 212}))
 
     assert caplog.records == []
+
+
+# ---------- baseline_pass e threshold_db do hotspot ----------
+
+
+@pytest.mark.parametrize(
+    ("idioma", "texto"),
+    [
+        ("pt", "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **212 km²** com limiar de 3 dB."),
+        ("en", "Between Jan 14, 2026 and Nov 12, 2026, the radar measured **212 km²** at a 3 dB threshold."),
+    ],
+)
+def test_baseline_pass_e_threshold_db_confirmam_a_comparacao(idioma: str, texto: str) -> None:
+    hotspot = {"affected_area_km2": 212, "last_pass": "2026-11-12", "baseline_pass": "2026-01-14", "threshold_db": 3}
+
+    assert numeros_confirmados(resposta(texto, idioma), dados({"hotspot": hotspot}))
+    assert not numeros_confirmados(resposta("Entre 15 jan 2026 e 12 nov 2026.", "pt"), dados({"hotspot": hotspot}))

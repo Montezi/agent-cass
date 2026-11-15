@@ -236,7 +236,8 @@ def listar_hotspots() -> dict[str, Any]:
 @_erros_como_dado
 def consultar_hotspot(id: str) -> dict[str, Any]:
     """Consulta o que o radar mediu num hotspot: classe dominante, área afetada,
-    confiança, data da última passagem e área de interesse.
+    confiança, data da última passagem, passagem de comparação (baseline_pass),
+    limiar da área em dB (threshold_db) e área de interesse.
 
     Valores null ainda não foram medidos. O efeito esperado do El Niño vem de
     contexto_enso.
