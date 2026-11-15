@@ -30,7 +30,7 @@ from cass.hooks import ProgressoERegistro
 from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
 from cass.steering import SteeringCass
-from cass.verificacao import resposta_segura
+from cass.verificacao import Verificacao, resposta_segura
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ MAX_TOKENS_GERADOS = 8192
 MAX_TOKENS_TOTAIS = 60000
 TEMPO_LIMITE_S = 20.0  # o app desiste depois disso
 TENTATIVAS_DE_SAIDA = 3  # chamadas inválidas à ferramenta de saída antes de desistir
+MAX_VALORES_NA_CORRECAO = 8  # valores sem apoio listados na mensagem de correção
 IDIOMAS: dict[str, str] = {"pt": "português", "en": "inglês"}
 # Todas as ferramentas do Cass (apêndice B). Os resultados de qualquer uma contam para
 # fontes, dados de exemplo e hipótese.
@@ -83,7 +84,7 @@ GATILHOS_DAS_SKILLS: dict[str, re.Pattern[str]] = {
 }
 
 Resultado = tuple[str, dict[str, Any]]  # (ferramenta, o dict que ela devolveu)
-ValidadorResposta = Callable[[RespostaCass, list[Resultado]], bool]
+ValidadorResposta = Callable[[RespostaCass, list[Resultado]], Verificacao]
 
 # Apêndice C do plano de desenvolvimento.
 PROMPT_DE_SISTEMA = """\
@@ -275,7 +276,8 @@ async def responder(
                     fontes=_fontes(resultados),
                     dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
                 )
-                if validar is None or validar(resposta, resultados):
+                verificacao = validar(resposta, resultados) if validar is not None else Verificacao()
+                if verificacao:
                     tipo = resposta.tipo
                     return resposta, usadas
                 if tentativa == 1:
@@ -287,18 +289,33 @@ async def responder(
                 contexto_invocacao = resultado.invocation_context
                 # Mesmo Agent, portão, steering, fila e prazo: a repetição não
                 # concede novas consultas nem reinicia o limite de 20 segundos.
-                mensagem = (
-                    "Revise a resposta: há números sem apoio nos resultados das ferramentas "
-                    "ou uma afirmação causal indevida. Use somente valores efetivamente "
-                    "consultados, com unidade e data correspondentes. Se faltarem dados, "
-                    "diga isso sem inventar números. Trate a relação com El Niño como "
-                    "hipótese, nunca causa comprovada. Responda no idioma do pedido."
-                )
+                mensagem = _mensagem_de_correcao(verificacao)
     except TimeoutError as e:
         raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
     finally:
         # Inclui preparação, correção e resposta segura, também nas falhas.
         progresso.finalizar(tipo)
+
+
+def _mensagem_de_correcao(verificacao: Verificacao) -> str:
+    """O que corrigir: cada valor sem apoio (sem repetir) e, se houver, a causa afirmada.
+
+    Os valores são trechos curtos de número ou data que o próprio modelo escreveu.
+    """
+    valores = list(dict.fromkeys(n.valor for n in verificacao.nao_confirmados))
+    itens = [
+        f"- o valor {valor} não está nos resultados; remova ou use um valor consultado."
+        for valor in valores[:MAX_VALORES_NA_CORRECAO]
+    ]
+    if len(valores) > MAX_VALORES_NA_CORRECAO:
+        itens.append("- confira também os outros números e datas: use só valores consultados.")
+    if verificacao.causais:
+        itens.append("- trate a relação com o El Niño como hipótese, nunca como causa comprovada.")
+    return "\n".join([
+        "Revise a resposta:",
+        *itens,
+        "Se faltarem dados, diga isso sem inventar números. Responda no idioma do pedido.",
+    ])
 
 
 async def _buscar_hotspot(hotspot_id: str | None) -> dict[str, Any] | None:

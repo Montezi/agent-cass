@@ -756,6 +756,59 @@ def test_numero_sem_dado_pede_uma_correcao_com_o_mesmo_agente(
     assert len(registros) == 1 and registros[0]["tipo"] == "resposta"
 
 
+def test_correcao_lista_cada_valor_sem_apoio(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+) -> None:
+    inventada = RESPOSTA_DO_MODELO.model_copy(update={
+        "texto": "Desde 2024 o radar mediu **999 km²**.", "medido": ["Mais **999 km²**."],
+    })
+    simulado = simular(respostas=[inventada, RESPOSTA_DO_MODELO])
+
+    perguntar(cliente)
+
+    correcao = simulado.chamadas[1]["prompt"]
+    assert correcao.startswith("Revise a resposta")
+    for valor in ("2024", "999"):
+        assert f"o valor {valor} não está nos resultados; remova ou use um valor consultado" in correcao
+    assert correcao.count("o valor 999") == 1
+    assert "El Niño" not in correcao
+    assert "Desde" not in correcao and "radar mediu" not in correcao
+
+
+def test_correcao_de_causa_afirmada_pede_hipotese_sem_listar_valores(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+) -> None:
+    causal = RESPOSTA_DO_MODELO.model_copy(update={"texto": "O El Niño causou a mudança."})
+    simulado = simular(respostas=[causal, RESPOSTA_DO_MODELO])
+
+    perguntar(cliente)
+
+    correcao = simulado.chamadas[1]["prompt"]
+    assert correcao.startswith("Revise a resposta")
+    assert "hipótese" in correcao and "o valor" not in correcao
+
+
+def test_correcao_lista_no_maximo_oito_valores(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+) -> None:
+    texto = " ".join(f"{n} km²." for n in range(101, 113))
+    simulado = simular(respostas=[
+        RESPOSTA_DO_MODELO.model_copy(update={"texto": texto}), RESPOSTA_DO_MODELO,
+    ])
+
+    perguntar(cliente)
+
+    correcao = simulado.chamadas[1]["prompt"]
+    assert correcao.count("não está nos resultados") == agente.MAX_VALORES_NA_CORRECAO == 8
+    assert "o valor 108 " in correcao and "o valor 109 " not in correcao
+
+
 @pytest.mark.parametrize("idioma", ["pt", "en"])
 def test_segunda_saida_sem_apoio_usa_template_de_baixa_confianca(
     cliente: TestClient,

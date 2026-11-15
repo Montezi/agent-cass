@@ -1,6 +1,7 @@
 """Confirmação de números e causalidade com dados locais, sem modelo ou rede."""
 
 import json
+import logging
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -9,10 +10,12 @@ import pytest
 
 from cass.modelos import Fonte, Hipotese, RespostaCass
 from cass.verificacao import (
+    NaoConfirmado,
     afirma_causalidade,
     numeros_confirmados,
     resposta_segura,
     validar_resposta,
+    valores_nao_confirmados,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
@@ -302,3 +305,91 @@ def test_resposta_segura_retira_afirmacoes_e_preserva_fontes_sample_sem_mudar_or
     assert segura.dados_de_exemplo is True
     assert validar_resposta(segura, [])
     assert ("Não consegui" in segura.texto) if idioma == "pt" else ("could not" in segura.texto)
+
+
+# ---------- quais valores não foram confirmados, e onde ----------
+
+
+def test_lista_o_valor_e_o_campo_de_cada_numero_ou_data_sem_apoio() -> None:
+    r = resposta(
+        "Desde 2024 a área cresceu.",
+        medido=["**212 km²** em 12 nov 2026.", "Passagem de 13 nov 2026."],
+        hipotese=Hipotese(texto="Chuva acima da média.", evidencia="Choveu 300 mm.", forca="fraca"),
+    )
+    r.opcoes = ["Ver 5 hotspots"]
+
+    nao_confirmados = valores_nao_confirmados(r, dados({"affected_area_km2": 212, "last_pass": "2026-11-12"}))
+
+    assert nao_confirmados == [
+        NaoConfirmado(campo="texto", valor="2024"),
+        NaoConfirmado(campo="medido[1]", valor="13 nov 2026"),
+        NaoConfirmado(campo="opcoes[0]", valor="5"),
+        NaoConfirmado(campo="hipotese.evidencia", valor="300"),
+    ]
+
+
+def test_lista_todos_os_valores_sem_repetir_e_o_percentual_com_o_sinal() -> None:
+    r = resposta("Áreas de 10 km², 20 km² e de novo 10 km², com 88% de confiança.")
+
+    nao_confirmados = valores_nao_confirmados(r, dados({"affected_area_km2": 212, "confidence": 0.86}))
+
+    assert [n.valor for n in nao_confirmados] == ["10", "20", "88%"]
+    assert valores_nao_confirmados(resposta("Área de 212 km²."), dados({"affected_area_km2": 212})) == []
+
+
+def test_valor_fica_numa_linha_so_e_curto() -> None:
+    longo = ".".join(["123"] * 40)
+    r = resposta(f"Passagem de 13\nnov 2026 e {longo} km².")
+
+    valores = [n.valor for n in valores_nao_confirmados(r, [])]
+
+    assert valores[0] == "13 nov 2026"
+    assert all("\n" not in v and len(v) <= 40 for v in valores)
+
+
+def test_validacao_devolve_os_valores_e_os_campos_com_causa_afirmada() -> None:
+    fonte = dados({"affected_area_km2": 212})
+
+    recusada = validar_resposta(resposta("O El Niño causou a mudança de 999 km²."), fonte)
+    aprovada = validar_resposta(resposta("Área de 212 km²."), fonte)
+
+    assert not recusada
+    assert recusada.nao_confirmados == (NaoConfirmado(campo="texto", valor="999"),)
+    assert recusada.causais == ("texto",)
+    assert aprovada
+    assert aprovada.nao_confirmados == () and aprovada.causais == ()
+
+
+def test_log_traz_o_valor_e_o_campo_sem_o_texto_inteiro(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="cass.verificacao")
+    r = resposta("No Lago Guaíba, desde 2024 a área cresceu.", medido=["Área de **999 km²**."])
+    hipotese = Hipotese(texto="O El Niño causou a cheia.", evidencia="contexto regional", forca="fraca")
+    r.hipotese = hipotese
+
+    validar_resposta(r, dados({"affected_area_km2": 212}))
+
+    registro = " ".join(rec.getMessage() for rec in caplog.records)
+    assert len(caplog.records) == 1 and caplog.records[0].levelno == logging.WARNING
+    assert "texto='2024'" in registro and "medido[0]='999'" in registro
+    assert "hipotese.texto" in registro
+    for trecho in ("Guaíba", "cresceu", "Área", "cheia", "regional"):
+        assert trecho not in registro
+
+
+def test_log_resume_quando_ha_muitos_valores(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="cass.verificacao")
+    texto = " ".join(f"{n} km²." for n in range(101, 116))
+
+    validar_resposta(resposta(texto), [])
+
+    registro = caplog.records[0].getMessage()
+    assert "'110'" in registro and "'111'" not in registro
+    assert "e mais 5" in registro
+
+
+def test_resposta_aprovada_nao_vai_para_o_log(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="cass.verificacao")
+
+    validar_resposta(resposta("Área de 212 km²."), dados({"affected_area_km2": 212}))
+
+    assert caplog.records == []

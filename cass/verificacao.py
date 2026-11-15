@@ -1,5 +1,6 @@
 """Confere a saída com os dados usados, antes de convertê-la para o contrato público."""
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -10,7 +11,11 @@ from typing import Any
 from cass.formato import Idioma, formatar_numero
 from cass.modelos import RespostaCass
 
+logger = logging.getLogger(__name__)
+
 Resultado = tuple[str, dict[str, Any]]
+MAX_CARACTERES_VALOR = 40  # o valor vai para o log e para a mensagem de correção
+MAX_VALORES_NO_LOG = 10
 
 _IGNORAR = frozenset({
     "id", "hotspot_id", "validos", "toolUseId", "url", "uri", "link",
@@ -76,6 +81,25 @@ _MEDIDA_APOS_ANO = re.compile(
     r"\s*\*{0,2}\s*(?:%|km\b|km[²2]|m[²2]|mm\b|cm\b|ha\b|pessoas\b|people\b|dias\b|days\b)",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class NaoConfirmado:
+    """Um número ou data da resposta sem apoio nos resultados das ferramentas."""
+
+    campo: str  # "texto", "medido[0]", "opcoes[1]", "hipotese.texto", "hipotese.evidencia"
+    valor: str  # o trecho como o modelo escreveu, como "2024", "88%" ou "13 nov 2026"
+
+
+@dataclass(frozen=True)
+class Verificacao:
+    """Resultado da camada final. Verdadeiro quando a resposta pode ser publicada."""
+
+    nao_confirmados: tuple[NaoConfirmado, ...] = ()
+    causais: tuple[str, ...] = ()  # campos que afirmam que o El Niño causou a mudança
+
+    def __bool__(self) -> bool:
+        return not self.nao_confirmados and not self.causais
 
 
 @dataclass
@@ -276,11 +300,13 @@ def _coletar_texto(texto: str, evidencias: _Evidencias, idioma: Idioma) -> None:
                 evidencias.numeros.add(numero)
 
 
-def _textos_publicados(resposta: RespostaCass) -> list[str]:
-    """Todos os campos livres que para_contrato transforma em parágrafos."""
-    textos = [resposta.texto, *resposta.medido, *resposta.opcoes]
+def _textos_publicados(resposta: RespostaCass) -> list[tuple[str, str]]:
+    """(campo, texto) de todos os campos livres que para_contrato transforma em parágrafos."""
+    textos = [("texto", resposta.texto)]
+    textos += [(f"medido[{i}]", t) for i, t in enumerate(resposta.medido)]
+    textos += [(f"opcoes[{i}]", t) for i, t in enumerate(resposta.opcoes)]
     if resposta.hipotese is not None:
-        textos.extend([resposta.hipotese.texto, resposta.hipotese.evidencia])
+        textos += [("hipotese.texto", resposta.hipotese.texto), ("hipotese.evidencia", resposta.hipotese.evidencia)]
     return textos
 
 
@@ -301,19 +327,21 @@ def _nomes_de_hotspots(resultados: list[Resultado]) -> set[str]:
     return nomes
 
 
-def numeros_confirmados(resposta: RespostaCass, resultados: list[Resultado]) -> bool:
-    """Confere números em todos os campos publicados; valores ausentes nunca viram zero.
+def valores_nao_confirmados(resposta: RespostaCass, resultados: list[Resultado]) -> list[NaoConfirmado]:
+    """Números e datas de todos os campos publicados que os resultados não confirmam.
 
-    A comparação reconhece o formato PT/EN, datas do dado e confiança em %. Não
-    usa IDs, coordenadas ou fontes como prova de uma medição e não calcula novas
-    estatísticas nem infere valores a partir do número de itens de uma lista.
+    Valores ausentes nunca viram zero. A comparação reconhece o formato PT/EN, datas
+    do dado e confiança em %. Não usa IDs, coordenadas ou fontes como prova de uma
+    medição e não calcula novas estatísticas nem infere valores a partir do número
+    de itens de uma lista. Cada (campo, valor) aparece uma vez, na ordem do texto.
     """
     evidencias = _Evidencias()
     for _, dados in resultados:
         _coletar(dados, evidencias, resposta.idioma)
     nomes = _nomes_de_hotspots(resultados)
-    for trecho in _textos_publicados(resposta):
-        if trecho in resposta.opcoes and trecho.strip() in nomes:
+    encontrados: dict[NaoConfirmado, None] = {}
+    for campo, trecho in _textos_publicados(resposta):
+        if campo.startswith("opcoes[") and trecho.strip() in nomes:
             continue
         texto = _sem_proveniencia(trecho, evidencias)
         datas = _datas_no_texto(texto, resposta.idioma)
@@ -327,14 +355,28 @@ def numeros_confirmados(resposta: RespostaCass, resultados: list[Resultado]) -> 
             else:
                 confirmada = any(d.day == dia and d.month == mes and (ano is None or d.year == ano) for d in evidencias.datas)
             if not confirmada:
-                return False
+                encontrados[_nao_confirmado(campo, literal)] = None
         texto = _mascarar(texto, datas)
         for m in _NUMERO.finditer(texto):
             numero = _numero_localizado(m[0], resposta.idioma)
-            permitidos = evidencias.percentuais if _PERCENTUAL.match(texto[m.end():]) else evidencias.numeros
+            percentual = _PERCENTUAL.match(texto[m.end():])
+            permitidos = evidencias.percentuais if percentual else evidencias.numeros
             if numero is None or numero not in permitidos:
-                return False
-    return True
+                encontrados[_nao_confirmado(campo, m[0] + ("%" if percentual else ""))] = None
+    return list(encontrados)
+
+
+def _nao_confirmado(campo: str, literal: str) -> NaoConfirmado:
+    """O valor numa linha só e curto: ele vai para o log e de volta ao modelo."""
+    valor = " ".join(literal.split())
+    if len(valor) > MAX_CARACTERES_VALOR:
+        valor = valor[: MAX_CARACTERES_VALOR - 1] + "…"
+    return NaoConfirmado(campo=campo, valor=valor)
+
+
+def numeros_confirmados(resposta: RespostaCass, resultados: list[Resultado]) -> bool:
+    """Todo número e data dos campos publicados está nos resultados das ferramentas?"""
+    return not valores_nao_confirmados(resposta, resultados)
 
 
 _EL_NINO = r"\bel\s+nino\b"
@@ -399,10 +441,29 @@ def afirma_causalidade(texto: str) -> bool:
     return False
 
 
-def validar_resposta(resposta: RespostaCass, resultados: list[Resultado]) -> bool:
-    """Camada final antes de devolver a resposta: números confirmados e sem causa afirmada."""
-    textos = _textos_publicados(resposta)
-    return numeros_confirmados(resposta, resultados) and not any(afirma_causalidade(t) for t in textos)
+def validar_resposta(resposta: RespostaCass, resultados: list[Resultado]) -> Verificacao:
+    """Camada final antes de devolver a resposta: números confirmados e sem causa afirmada.
+
+    Uma recusa vai para o log com o campo e o valor, nunca com o texto da resposta.
+    """
+    verificacao = Verificacao(
+        nao_confirmados=tuple(valores_nao_confirmados(resposta, resultados)),
+        causais=tuple(campo for campo, texto in _textos_publicados(resposta) if afirma_causalidade(texto)),
+    )
+    if not verificacao:
+        _registrar_recusa(verificacao)
+    return verificacao
+
+
+def _registrar_recusa(verificacao: Verificacao) -> None:
+    valores = [f"{n.campo}={n.valor!r}" for n in verificacao.nao_confirmados[:MAX_VALORES_NO_LOG]]
+    sobra = len(verificacao.nao_confirmados) - MAX_VALORES_NO_LOG
+    if sobra > 0:
+        valores.append(f"e mais {sobra}")
+    logger.warning(
+        "verificação recusou a resposta; não confirmados: %s; causa afirmada em: %s",
+        ", ".join(valores) or "nenhum", ", ".join(verificacao.causais) or "nenhum campo",
+    )
 
 
 def resposta_segura(resposta: RespostaCass) -> RespostaCass:

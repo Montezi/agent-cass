@@ -124,7 +124,14 @@ confiança em porcentagem. IDs, URLs, nomes de fontes, coordenadas, bbox, flags,
 erros e valores nulos não autorizam uma medição. A verificação compara valores;
 não constitui uma validação semântica completa de toda afirmação do modelo.
 
-Na primeira falha, solicita uma correção no mesmo Agent. Na segunda falha,
+A verificação devolve cada número ou data sem apoio, com o campo onde apareceu
+(`texto`, `medido[0]`, `hipotese.evidencia`...), e os campos com causa afirmada.
+Uma recusa vira uma linha de aviso no log com o campo e o valor (em uma linha,
+até 40 caracteres, no máximo 10 valores), nunca com o texto da resposta.
+
+Na primeira falha, solicita uma correção no mesmo Agent, listando até 8 valores
+("o valor 2024 não está nos resultados; remova ou use um valor consultado") e,
+se for o caso, pedindo para tratar o El Niño como hipótese. Na segunda falha,
 devolve texto fixo no idioma do pedido, `confianca="baixa"`, sem números não
 confirmados, medido ou hipótese, preservando fontes e aviso de dados de exemplo.
 O formato público continua com `paragraphs`, `tools`, `sources` e `note`.
