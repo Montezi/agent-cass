@@ -20,7 +20,7 @@ from strands import tool
 from cass.config import carregar_config
 from cass.formato import AVISO_DE_EXEMPLO, Idioma, formatar_data, formatar_dia
 from cass.formato import formatar_fonte, formatar_numero
-from cass.modelos import ClasseDominante, ColecaoHotspots, Hotspot, PrevisaoClima
+from cass.modelos import ClasseDominante, ColecaoHotspots, Hotspot, PrevisaoClima, PrevisaoSalva
 
 TIMEOUT_S = 5.0
 CACHE_TTL_S = 300.0  # o hotspots.geojson só muda num deploy do frontend
@@ -252,7 +252,8 @@ def previsao_tempo(id: str, dias: int = DIAS_PADRAO) -> dict[str, Any]:
     """Previsão de chuva por dia no hotspot, com a fonte e a data em que foi gerada.
 
     Se so_referencia for true, a previsão tem mais de 3 dias: mostre só como
-    referência e não a use para avisar de chuva.
+    referência e não a use para avisar de chuva. Se reserva for true, a previsão ao
+    vivo falhou e esta é a última previsão salva: diga isso, com a data dela.
 
     Args:
         id: id do hotspot, como "guaiba-rs".
@@ -263,7 +264,11 @@ def previsao_tempo(id: str, dias: int = DIAS_PADRAO) -> dict[str, Any]:
     hotspot, _, _ = _hotspot(id)
     lon, lat = hotspot.geometry.coordinates
     url = str(httpx.URL(carregar_config().clima_url, params={"hotspot": id, "lat": lat, "lon": lon}))
-    previsao = _ler(url, "a /api/clima", PrevisaoClima, CACHE_CLIMA_TTL_S)
+    try:
+        previsao = _ler(url, "a /api/clima", PrevisaoClima, CACHE_CLIMA_TTL_S)
+    except _Recusa as falha:
+        # Timeout, HTTP, conexão ou JSON fora do contrato: vale a previsão salva.
+        return _previsao_salva(id, dias, falha.dados["erro"])
     em_json = previsao.model_dump(mode="json")
     return {
         "fonte": _fonte(FONTES_DE_PREVISAO[previsao.source], previsao.updated_at.date(), url),
@@ -271,6 +276,30 @@ def previsao_tempo(id: str, dias: int = DIAS_PADRAO) -> dict[str, Any]:
         "atualizada_em": em_json["updated_at"],
         "so_referencia": _agora() - previsao.updated_at > PREVISAO_VELHA,
         "dias": em_json["days"][:dias],
+    }
+
+
+def _previsao_salva(id: str, dias: int, motivo: str) -> dict[str, Any]:
+    """{DADOS_BASE}/forecast-snapshot.json, quando a /api/clima não serve."""
+    url = f"{carregar_config().dados_base.rstrip('/')}/forecast-snapshot.json"
+    try:
+        salva = _ler(url, "o forecast-snapshot.json", PrevisaoSalva, CACHE_CLIMA_TTL_S)
+    except _Recusa as falha:
+        raise _Recusa(
+            erro=f"{motivo}; a previsão salva também falhou: {falha.dados['erro']}", url=url
+        ) from falha
+    if id not in salva.forecasts:
+        raise _Recusa(erro=f"{motivo}; a previsão salva não tem o hotspot {id!r}", url=url)
+    em_json = salva.model_dump(mode="json")
+    return {
+        "fonte": _fonte(FONTES_DE_PREVISAO["snapshot"], salva.updated_at.date(), url),
+        "hotspot_id": id,
+        "atualizada_em": em_json["updated_at"],
+        "so_referencia": _agora() - salva.updated_at > PREVISAO_VELHA,
+        "reserva": True,
+        "motivo_da_reserva": motivo,
+        "dados_de_exemplo": salva.metadata.sample,
+        "dias": em_json["forecasts"][id][:dias],
     }
 
 

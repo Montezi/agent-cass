@@ -60,6 +60,12 @@ do serviço Cloud Run `clima` também não está no frontend. O snapshot local �
 fallback implementado; os dois fornecedores ainda precisam ser confirmados no
 repositório do serviço. Ver `docs/api-contract.md:60` do frontend.
 
+No Cass, `previsao_tempo` usa a mesma reserva: se a `CLIMA_URL` falhar (timeout,
+HTTP, conexão) ou não devolver JSON válido no contrato, lê
+`{DADOS_BASE}/forecast-snapshot.json` (formato do `forecastSnapshotSchema`) e
+devolve a fonte "Snapshot" com a data do arquivo, `reserva: true` e o motivo. Se
+as duas falharem, devolve um erro com os dois motivos.
+
 Há diferenças entre as cópias dos contratos: o frontend documenta dados v2
 (`baseline_pass`, `threshold_db`, `metadata.schema_version`, `generated_at`) e
 erros 400 para pedidos inválidos; este backend ainda valida com 422. O limite da

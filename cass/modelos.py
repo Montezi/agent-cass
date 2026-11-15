@@ -168,6 +168,18 @@ class PrevisaoClima(_Contrato):
     days: list[DiaDePrevisao] = Field(min_length=1)
 
 
+class PrevisaoSalva(_Contrato):
+    """{DADOS_BASE}/forecast-snapshot.json: espelho do zod forecastSnapshotSchema.
+
+    É a reserva quando a /api/clima falha: uma lista de dias por id de hotspot.
+    """
+
+    metadata: Metadados = Field(default_factory=Metadados)
+    source: Literal["snapshot"]
+    updated_at: AwareDatetime
+    forecasts: dict[str, Annotated[list[DiaDePrevisao], Field(min_length=1)]]
+
+
 # ---------- Contrato público do POST /api/agente (docs/api-contract.md) ----------
 # Espelho do zod agentAnswerSchema (frontend, src/features/cass/agentApi.ts).
 # Chaves em inglês, como no contrato.
