@@ -34,6 +34,7 @@ TIMEOUT_S = 5.0  # hotspots.geojson e forecast-snapshot.json
 # Meteomatics e Open-Meteo: com as duas fora, o snapshot ainda chega antes dos 8 s
 # que o app espera pela /api/clima.
 TIMEOUT_AO_VIVO_S = 3.0
+MAX_BYTES_DADOS = 1_048_576  # JSON dos seis hotspots e previsões; limite antes do parse.
 CACHE_TTL_S = 300.0  # o hotspots.geojson só muda num deploy do frontend
 CACHE_CLIMA_TTL_S = 600.0  # o forecast-snapshot.json
 CACHE_PREVISAO_TTL_S = 1800.0  # por hotspot, qualquer que seja a fonte que serviu
@@ -127,9 +128,7 @@ def _validar(
 ) -> M:
     """GET com timeout, validado contra o modelo; qualquer falha vira _Recusa."""
     try:
-        resposta = httpx.get(url, timeout=timeout, auth=auth)
-        resposta.raise_for_status()
-        return modelo.model_validate_json(resposta.content)
+        return modelo.model_validate_json(_baixar_json(url, nome, auth, timeout))
     except httpx.TimeoutException as e:
         raise _Recusa(erro=f"{nome} não respondeu em {timeout:g} s", url=url) from e
     except httpx.HTTPStatusError as e:
@@ -140,6 +139,39 @@ def _validar(
         raise _Recusa(
             erro=f"{nome} não segue o contrato de dados ({e.error_count()} erros)", url=url
         ) from e
+
+
+def _baixar_json(
+    url: str, nome: str, auth: httpx.Auth | None = None, timeout: float = TIMEOUT_S
+) -> bytes:
+    """Limita o corpo antes do JSON e evita descompressão sem limite em memória.
+
+    O servidor deve respeitar Accept-Encoding: identity. Redirecionamentos não
+    podem trocar o destino configurado. O prazo observado entre blocos limita
+    fluxos que enviam bytes continuamente; uma leitura individual continua
+    limitada pelo timeout HTTP (não é um prazo rígido de parede).
+    """
+    inicio = monotonic()
+    with httpx.stream(
+        "GET", url, timeout=timeout, follow_redirects=False,
+        headers={"Accept-Encoding": "identity"}, auth=auth,
+    ) as resposta:
+        resposta.raise_for_status()
+        if resposta.headers.get("content-encoding", "identity").strip().lower() not in {"", "identity"}:
+            raise _Recusa(erro=f"{nome} devolveu uma codificação não permitida", url=url)
+        declarado = resposta.headers.get("content-length", "").lstrip("0")
+        if declarado.isdecimal() and (
+            len(declarado) > len(str(MAX_BYTES_DADOS)) or int(declarado) > MAX_BYTES_DADOS
+        ):
+            raise _Recusa(erro=f"{nome} excede o limite de {MAX_BYTES_DADOS} bytes", url=url)
+        corpo = bytearray()
+        for bloco in resposta.iter_bytes():
+            if monotonic() - inicio >= timeout:
+                raise httpx.ReadTimeout("prazo de leitura excedido", request=resposta.request)
+            if len(bloco) > MAX_BYTES_DADOS - len(corpo):
+                raise _Recusa(erro=f"{nome} excede o limite de {MAX_BYTES_DADOS} bytes", url=url)
+            corpo.extend(bloco)
+        return bytes(corpo)
 
 
 def _colecao() -> tuple[ColecaoHotspots, str]:
@@ -297,7 +329,7 @@ def previsao_tempo(id: str, dias: int = DIAS_PADRAO) -> dict[str, Any]:
         id: id do hotspot, como "guaiba-rs".
         dias: quantos dias, de 1 a 7.
     """
-    if not DIAS_MIN <= dias <= DIAS_MAX:
+    if type(dias) is not int or not DIAS_MIN <= dias <= DIAS_MAX:
         raise _Recusa(erro=f"dias deve ser de {DIAS_MIN} a {DIAS_MAX}", validos=list(range(1, 8)))
     hotspot, _, _ = _hotspot(id)
     try:

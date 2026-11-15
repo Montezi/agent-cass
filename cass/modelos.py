@@ -31,7 +31,7 @@ _DATA = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _CAMINHO = re.compile(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*")
 
 # Como o z.number(): aceita int e float, recusa texto ("0.87") e booleano.
-Numero = Annotated[float, Strict()]
+Numero = Annotated[float, Strict(), Field(allow_inf_nan=False)]
 Longitude = Annotated[Numero, Field(ge=-180, le=180)]
 Latitude = Annotated[Numero, Field(ge=-90, le=90)]
 
