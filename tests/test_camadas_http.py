@@ -1,5 +1,6 @@
 """Admissão HTTP, CORS e camadas compartilhadas entre JSON e SSE, sem Gemini."""
 
+import asyncio
 import json
 import time
 from collections.abc import Iterator
@@ -12,7 +13,7 @@ from starlette.requests import Request
 
 from cass import main
 from cass.config import carregar_config
-from cass.limites import LimitadorPorIP, ip_do_cliente, verificar_limite_ip
+from cass.limites import LimitadorPorIP, LimiteDeCorpo, ip_do_cliente, verificar_limite_ip
 from cass.modelos import PedidoAgente, RespostaCass
 
 ORIGEM = "https://app.teste"
@@ -328,3 +329,129 @@ def test_ips_distintos_e_ausencia_de_cliente_tem_cotas_separadas_sem_lifespan() 
     # Trocar a config em um teste ASGI equivale a iniciar um novo ciclo de vida.
     app.state.config = carregar_config({"GOOGLE_CLOUD_PROJECT": "outra-config"})
     assert verificar_limite_ip(requisicao("203.0.113.1")) is None
+
+
+# ---------- corpo do pedido de no máximo 2 KB (api-contract.md do frontend) ----------
+
+
+def corpo_com(tamanho: int, **campos: Any) -> bytes:
+    """JSON válido do pedido, completado com espaços até `tamanho` bytes."""
+    texto = json.dumps({**PEDIDO, **campos}, ensure_ascii=False).encode()
+    assert len(texto) <= tamanho
+    return texto + b" " * (tamanho - len(texto))
+
+
+def postar(cliente: TestClient, rota: str, corpo: bytes, **cabecalhos: str) -> Any:
+    return cliente.post(
+        rota, content=corpo, headers={"Content-Type": "application/json", **cabecalhos}
+    )
+
+
+@pytest.mark.parametrize("rota", ROTAS)
+def test_corpo_de_ate_2_kb_passa(
+    cliente: TestClient, chamadas: list[dict[str, Any]], rota: str
+) -> None:
+    assert postar(cliente, rota, corpo_com(2048)).status_code == 200
+    assert len(chamadas) == 1
+
+
+@pytest.mark.parametrize("rota", ROTAS)
+def test_corpo_acima_de_2_kb_e_recusado_antes_do_agente(
+    cliente: TestClient, chamadas: list[dict[str, Any]], rota: str
+) -> None:
+    resposta = postar(cliente, rota, corpo_com(2049))
+
+    assert resposta.status_code == 413
+    assert resposta.headers["content-type"] == "application/json"
+    assert "2048 bytes" in resposta.json()["detail"]
+    assert chamadas == []
+
+
+def test_pergunta_maxima_do_app_cabe_em_2_kb(
+    cliente: TestClient, chamadas: list[dict[str, Any]]
+) -> None:
+    # 500 caracteres de 3 bytes em UTF-8 (o pior caso comum) ainda cabem.
+    pergunta = "水" * 500
+
+    resposta = postar(cliente, "/api/agente", json.dumps({**PEDIDO, "question": pergunta}, ensure_ascii=False).encode())
+
+    assert resposta.status_code == 200
+    assert chamadas[0]["pedido"].question == pergunta
+
+
+def test_recusa_413_tem_cors_para_a_origem_do_app(cliente: TestClient) -> None:
+    resposta = postar(cliente, "/api/agente", corpo_com(4096), Origin=ORIGEM)
+
+    assert resposta.status_code == 413
+    assert resposta.headers["access-control-allow-origin"] == ORIGEM
+
+
+def test_413_nao_consome_a_cota_por_ip(
+    cliente: TestClient, chamadas: list[dict[str, Any]]
+) -> None:
+    for _ in range(12):
+        assert postar(cliente, "/api/agente", corpo_com(3000)).status_code == 413
+
+    assert postar(cliente, "/api/agente", corpo_com(200)).status_code == 200
+
+
+def _rodar_asgi(app: Any, scope: dict[str, Any], pedacos: list[bytes]) -> list[dict[str, Any]]:
+    mensagens = [
+        {"type": "http.request", "body": pedaco, "more_body": i < len(pedacos) - 1}
+        for i, pedaco in enumerate(pedacos)
+    ]
+    enviadas: list[dict[str, Any]] = []
+
+    async def receber() -> dict[str, Any]:
+        return mensagens.pop(0) if mensagens else {"type": "http.disconnect"}
+
+    async def enviar(mensagem: dict[str, Any]) -> None:
+        enviadas.append(mensagem)
+
+    asyncio.run(app(scope, receber, enviar))
+    return enviadas
+
+
+def _escopo(caminho: str = "/api/agente", metodo: str = "POST") -> dict[str, Any]:
+    # Sem Content-Length: o corpo chega em pedaços.
+    return {"type": "http", "method": metodo, "path": caminho, "headers": []}
+
+
+def test_corpo_em_pedacos_sem_content_length_tambem_e_contado() -> None:
+    recebidos: list[bytes] = []
+
+    async def aplicacao(scope: Any, receive: Any, send: Any) -> None:
+        recebidos.append((await receive())["body"])
+
+    enviadas = _rodar_asgi(LimiteDeCorpo(aplicacao), _escopo(), [b"x" * 1000] * 3)
+
+    assert enviadas[0]["status"] == 413
+    assert recebidos == []
+
+
+def test_corpo_em_pedacos_dentro_do_limite_chega_inteiro() -> None:
+    recebidos: list[dict[str, Any]] = []
+
+    async def aplicacao(scope: Any, receive: Any, send: Any) -> None:
+        recebidos.append(await receive())
+        recebidos.append(await receive())  # depois do corpo, o desconectar original
+
+    _rodar_asgi(LimiteDeCorpo(aplicacao), _escopo(), [b"a" * 1000, b"b" * 1000])
+
+    assert recebidos[0] == {"type": "http.request", "body": b"a" * 1000 + b"b" * 1000, "more_body": False}
+    assert recebidos[1] == {"type": "http.disconnect"}
+
+
+@pytest.mark.parametrize(
+    ("caminho", "metodo"),
+    [("/health", "GET"), ("/outra", "POST"), ("/api/agente", "OPTIONS")],
+)
+def test_outras_rotas_e_metodos_passam_direto(caminho: str, metodo: str) -> None:
+    chamada: list[str] = []
+
+    async def aplicacao(scope: Any, receive: Any, send: Any) -> None:
+        chamada.append(scope["path"])
+
+    _rodar_asgi(LimiteDeCorpo(aplicacao), _escopo(caminho, metodo), [b"x" * 5000])
+
+    assert chamada == [caminho]

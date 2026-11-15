@@ -157,6 +157,13 @@ Run não abre instâncias além dele, então os pedidos simultâneos ficam limit
 `--max-instances` × `--concurrency` (2 × 80 na variante leve, com a concorrência
 padrão).
 
+O corpo do POST em `/api/agente` e `/api/agente/stream` tem no máximo **2 KB**
+(2.048 bytes, api-contract.md do frontend). `cass.limites.LimiteDeCorpo` recusa
+com 413 antes de o FastAPI ler o JSON: confere o `Content-Length` e também conta
+os bytes recebidos, para um corpo em pedaços não escapar. A recusa não consome a
+cota por IP e sai com os cabeçalhos de CORS. Uma pergunta de 500 caracteres de
+até 3 bytes em UTF-8 cabe com folga.
+
 O `hotspot_id` precisa seguir o formato de id do contrato de dados e ser um dos ids
 do `hotspots.geojson` (api-contract.md do frontend). Fora do formato, a validação
 do pedido responde 422; um id que não está na lista também recebe 422, no mesmo

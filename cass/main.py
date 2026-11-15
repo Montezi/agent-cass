@@ -20,7 +20,7 @@ from cass.contrato import para_contrato, resposta_de_erro
 from cass.ferramentas import ids_dos_hotspots
 from cass.guardrails import avaliar_entrada
 from cass.hooks import EventoProgresso, ProgressoERegistro
-from cass.limites import CORSConfigurado, LimitadorPorIP, verificar_limite_ip
+from cass.limites import CORSConfigurado, LimitadorPorIP, LimiteDeCorpo, verificar_limite_ip
 from cass.modelos import PedidoAgente, RespostaAgente, RespostaCass
 from cass.verificacao import validar_resposta
 
@@ -37,6 +37,9 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="agent-cass", lifespan=ciclo_de_vida)
+# O último registrado é o mais externo: o CORS envolve o limite de corpo, e a recusa
+# 413 também sai com os cabeçalhos de origem.
+app.add_middleware(LimiteDeCorpo)
 app.add_middleware(CORSConfigurado)
 
 

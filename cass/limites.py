@@ -10,11 +10,14 @@ from time import monotonic
 
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 LIMITE_POR_MINUTO = 10
 JANELA_S = 60.0
 MAX_IPS = 10_000
+MAX_BYTES_DO_PEDIDO = 2048  # api-contract.md do frontend: corpo do pedido de até 2 KB
+ROTAS_COM_LIMITE_DE_CORPO = frozenset({"/api/agente", "/api/agente/stream"})
 
 
 @dataclass
@@ -94,6 +97,73 @@ def verificar_limite_ip(request: Request) -> int | None:
         estado.limite_ip = LimitadorPorIP()
         estado.limite_ip_config = config
     return estado.limite_ip.admitir(ip_do_cliente(request))
+
+
+class LimiteDeCorpo:
+    """Recusa com 413 o POST do /api/agente cujo corpo passa de 2 KB, antes do JSON.
+
+    Confere o Content-Length e também conta os bytes recebidos, para um corpo em
+    pedaços, sem Content-Length, não escapar. Lê no máximo `max_bytes` antes de
+    recusar e entrega à aplicação o corpo inteiro numa mensagem só.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int = MAX_BYTES_DO_PEDIDO,
+        rotas: frozenset[str] = ROTAS_COM_LIMITE_DE_CORPO,
+    ) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.rotas = rotas
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] not in self.rotas:
+            await self.app(scope, receive, send)
+            return
+        declarado = _content_length(scope)
+        if declarado is not None and declarado > self.max_bytes:
+            await self._recusar(scope, receive, send)
+            return
+        corpo = bytearray()
+        while True:
+            mensagem = await receive()
+            if mensagem["type"] == "http.disconnect":
+                return  # o cliente foi embora antes de mandar o corpo
+            corpo += mensagem.get("body", b"")
+            if len(corpo) > self.max_bytes:
+                await self._recusar(scope, receive, send)
+                return
+            if not mensagem.get("more_body", False):
+                break
+
+        entregue = False
+
+        async def receber() -> Message:
+            nonlocal entregue
+            if not entregue:
+                entregue = True
+                return {"type": "http.request", "body": bytes(corpo), "more_body": False}
+            return await receive()  # depois do corpo, o SSE ainda escuta o http.disconnect
+
+        await self.app(scope, receber, send)
+
+    async def _recusar(self, scope: Scope, receive: Receive, send: Send) -> None:
+        resposta = JSONResponse(
+            status_code=413,
+            content={"detail": f"o corpo do pedido passa de {self.max_bytes} bytes (2 KB)"},
+        )
+        await resposta(scope, receive, send)
+
+
+def _content_length(scope: Scope) -> int | None:
+    for nome, valor in scope.get("headers", []):
+        if nome == b"content-length":
+            try:
+                return int(valor)
+            except ValueError:
+                return None
+    return None
 
 
 class CORSConfigurado:
