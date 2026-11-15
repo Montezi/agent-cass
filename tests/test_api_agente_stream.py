@@ -26,7 +26,7 @@ RESPOSTA = RespostaCass(
 
 
 @pytest.fixture(autouse=True)
-def entrada_permitida(monkeypatch: pytest.MonkeyPatch) -> None:
+def entrada_permitida(monkeypatch: pytest.MonkeyPatch, ids_conhecidos: list[str]) -> None:
     # Estes testes isolam o transporte SSE; a camada de entrada tem testes próprios.
     monkeypatch.setattr(main, "avaliar_entrada", lambda pedido: None)
 

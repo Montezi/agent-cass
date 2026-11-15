@@ -136,6 +136,15 @@ def _hotspot(id: str) -> tuple[Hotspot, ColecaoHotspots, str]:
     )
 
 
+def ids_dos_hotspots() -> list[str] | None:
+    """Ids do hotspots.geojson (com o mesmo cache das ferramentas); None se não der para ler."""
+    try:
+        colecao, _ = _colecao()
+    except _Recusa:
+        return None
+    return [h.properties.id for h in colecao.features]
+
+
 def _fonte(nome: str, data: date | None, url: str) -> dict[str, Any]:
     return {"nome": nome, "data": data.isoformat() if data else None, "url": url}
 

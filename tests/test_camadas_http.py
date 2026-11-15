@@ -24,7 +24,7 @@ ROTAS = ["/api/agente", "/api/agente/stream"]
 
 
 @pytest.fixture
-def chamadas(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def chamadas(monkeypatch: pytest.MonkeyPatch, ids_conhecidos: list[str]) -> list[dict[str, Any]]:
     recebidas: list[dict[str, Any]] = []
 
     async def responder(

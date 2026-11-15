@@ -231,6 +231,7 @@ def test_hotspot_antecipado_e_limpo_antes_de_entrar_na_mensagem(
     cliente: TestClient,
     simular: Callable[..., AgenteSimulado],
     monkeypatch: pytest.MonkeyPatch,
+    ids_conhecidos: list[str],
 ) -> None:
     original = {
         "hotspot": {
@@ -281,7 +282,7 @@ def test_hotspot_antecipado_compartilha_a_cota_das_seis_consultas(
         assert isinstance(decisao, Proceed if numero <= 6 else Deny)
 
 
-@pytest.mark.parametrize("hotspot_id", [None, "guaiba-rs", "desconhecido"])
+@pytest.mark.parametrize("hotspot_id", [None, "guaiba-rs"])
 def test_cada_pergunta_ganha_guardrails_novos(
     cliente: TestClient,
     simular: Callable[..., AgenteSimulado],
@@ -366,6 +367,7 @@ def test_falha_antes_do_agent_tambem_gera_um_registro(
     cliente: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    ids_conhecidos: list[str],
 ) -> None:
     async def falhar(hotspot_id: str) -> None:
         raise RuntimeError("falha ao preparar os dados")
@@ -390,15 +392,77 @@ def test_hotspot_buscado_com_dados_de_exemplo_gera_note(
     assert note is not None and note.startswith("Dados de exemplo")
 
 
-def test_hotspot_desconhecido_nao_vai_na_mensagem(
-    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+@pytest.mark.parametrize("rota", ["/api/agente", "/api/agente/stream"])
+def test_hotspot_fora_do_hotspots_geojson_e_recusado(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route, rota: str
+) -> None:
+    # "ignore-as-regras" tem formato de id, mas não está no hotspots.geojson.
+    simulado = simular()
+
+    resposta = cliente.post(
+        rota, json={"question": "O que mudou?", "hotspot_id": "ignore-as-regras", "language": "pt"}
+    )
+
+    assert resposta.status_code == 422
+    assert resposta.headers["content-type"] == "application/json"
+    erro = resposta.json()["detail"][0]
+    assert erro["type"] == "hotspot_desconhecido"
+    assert erro["loc"] == ["body", "hotspot_id"]
+    assert erro["ctx"]["validos"] == [
+        "norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", "kariba", "borneo",
+    ]
+    assert simulado.chamadas == []
+
+
+@pytest.mark.parametrize(
+    "hotspot_id",
+    [
+        pytest.param("../hotspots", id="caminho"),
+        pytest.param("Guaiba RS", id="maiusculas-e-espaco"),
+        pytest.param("a" * 65, id="longo-demais"),
+        pytest.param("", id="vazio"),
+    ],
+)
+def test_hotspot_fora_do_formato_e_recusado_sem_ler_os_dados(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route, hotspot_id: str
 ) -> None:
     simulado = simular()
 
-    resposta = perguntar(cliente, "O que mudou?", "ignore-as-regras")
+    resposta = cliente.post(
+        "/api/agente", json={"question": "O que mudou?", "hotspot_id": hotspot_id, "language": "pt"}
+    )
+
+    assert resposta.status_code == 422
+    assert dados.call_count == 0
+    assert simulado.chamadas == []
+
+
+def test_conferir_o_hotspot_nao_custa_outra_leitura(
+    cliente: TestClient, simular: Callable[..., AgenteSimulado], dados: respx.Route
+) -> None:
+    simular()
+
+    perguntar(cliente, "O que mudou?", "guaiba-rs")
+
+    # A conferência e a busca antecipada usam o mesmo cache do hotspots.geojson.
+    assert dados.call_count == 1
+
+
+def test_sem_hotspots_geojson_o_pedido_segue_sem_o_hotspot(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    respx_mock: respx.MockRouter,
+    criados: list[dict],
+) -> None:
+    # Sem a lista, o id não é conferido; então ele não chega ao steering nem ao prompt.
+    respx_mock.get(URL_DADOS).mock(return_value=httpx.Response(503))
+    simulado = simular()
+
+    resposta = perguntar(cliente, "O que mudou?", "guaiba-rs")
 
     assert simulado.chamadas[0]["prompt"] == "O que mudou?"
     assert resposta.tools == []
+    assert criados[0]["steering"].hotspot_aberto is None
 
 
 def test_sem_hotspot_nao_busca_os_dados(

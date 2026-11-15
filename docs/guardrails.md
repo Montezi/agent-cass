@@ -157,6 +157,15 @@ Run não abre instâncias além dele, então os pedidos simultâneos ficam limit
 `--max-instances` × `--concurrency` (2 × 80 na variante leve, com a concorrência
 padrão).
 
+O `hotspot_id` precisa seguir o formato de id do contrato de dados e ser um dos ids
+do `hotspots.geojson` (api-contract.md do frontend). Fora do formato, a validação
+do pedido responde 422; um id que não está na lista também recebe 422, no mesmo
+formato de erro, com os ids válidos em `ctx.validos`. A conferência vem depois do
+limite por IP e, no SSE, antes de abrir o stream; usa o mesmo cache de 5 minutos
+das ferramentas. Se o `hotspots.geojson` não puder ser lido, o pedido segue sem
+`hotspot_id`: um id sem conferência não chega ao steering (que trataria o hotspot
+como aberto) nem ao prompt.
+
 ## Bateria de avaliação
 
 `tests/test_bateria.py` contém os nove casos do apêndice E, marcados `gemini`.

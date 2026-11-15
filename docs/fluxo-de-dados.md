@@ -69,7 +69,8 @@ as duas falharem, devolve um erro com os dois motivos.
 Há diferenças entre as cópias dos contratos: o frontend documenta dados v2
 (`baseline_pass`, `threshold_db`, `metadata.schema_version`, `generated_at`) e
 erros 400 para pedidos inválidos; este backend ainda valida com 422. O limite da
-pergunta já segue o frontend (até 500 caracteres). A integração deve reconciliar
+pergunta (até 500 caracteres) e a restrição do `hotspot_id` aos ids do
+`hotspots.geojson` já seguem o frontend. A integração deve reconciliar
 o resto em um passo próprio, preservando o contrato público durante esta tarefa.
 
 ## Relação com a avaliação do Decider

@@ -150,7 +150,7 @@ def test_causalidade_persistente_para_apos_guide_e_uma_correcao_da_camada_final(
 
 
 def test_sem_schema_valido_para_no_limite_e_endpoint_devolve_500(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], ids_conhecidos: list[str],
 ) -> None:
     # Cada chamada à ferramenta de saída falha por faltar tipo e confiança.
     modelo = ModeloProgramado([

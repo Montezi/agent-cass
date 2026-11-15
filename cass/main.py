@@ -17,6 +17,7 @@ from starlette.types import Send
 from cass.agente import TEMPO_LIMITE_S, AgenteDemorou, responder
 from cass.config import Configuracao, carregar_config
 from cass.contrato import para_contrato, resposta_de_erro
+from cass.ferramentas import ids_dos_hotspots
 from cass.guardrails import avaliar_entrada
 from cass.hooks import EventoProgresso, ProgressoERegistro
 from cass.limites import CORSConfigurado, LimitadorPorIP, verificar_limite_ip
@@ -48,6 +49,9 @@ def health() -> dict[str, bool]:
 async def api_agente(pedido: PedidoAgente, request: Request) -> RespostaAgente | JSONResponse:
     if (recusa := _limitar_ip(pedido, request)) is not None:
         return recusa
+    pedido, recusa = await _conferir_hotspot(pedido)
+    if recusa is not None:
+        return recusa
     # Pelo contrato, 500 e 504 levam o app ao estado de erro com "perguntar de novo".
     try:
         resposta, ferramentas = await _responder_protegido(pedido, request.app.state.config)
@@ -63,6 +67,31 @@ async def api_agente(pedido: PedidoAgente, request: Request) -> RespostaAgente |
 def _erro(status: int, pedido: PedidoAgente) -> JSONResponse:
     corpo = resposta_de_erro(pedido.language).model_dump()
     return JSONResponse(status_code=status, content=corpo)
+
+
+async def _conferir_hotspot(pedido: PedidoAgente) -> tuple[PedidoAgente, JSONResponse | None]:
+    """hotspot_id precisa ser um id do hotspots.geojson (api-contract.md do frontend).
+
+    Id desconhecido: 422, no formato de erro de validação do FastAPI. Se a lista
+    não puder ser lida, o pedido segue sem hotspot_id: um id sem conferência não
+    chega ao steering nem ao prompt.
+    """
+    if pedido.hotspot_id is None:
+        return pedido, None
+    ids = await asyncio.to_thread(ids_dos_hotspots)
+    if ids is None:
+        logger.warning("hotspots.geojson indisponível; o pedido segue sem hotspot_id")
+        return pedido.model_copy(update={"hotspot_id": None}), None
+    if pedido.hotspot_id in ids:
+        return pedido, None
+    erro = {
+        "type": "hotspot_desconhecido",
+        "loc": ["body", "hotspot_id"],
+        "msg": f"hotspot desconhecido: {pedido.hotspot_id!r}",
+        "input": pedido.hotspot_id,
+        "ctx": {"validos": ids},
+    }
+    return pedido, JSONResponse(status_code=422, content={"detail": [erro]})
 
 
 def _limitar_ip(pedido: PedidoAgente, request: Request) -> JSONResponse | None:
@@ -135,6 +164,10 @@ async def api_agente_stream(
     pedido: PedidoAgente, request: Request
 ) -> StreamingResponse | JSONResponse:
     if (recusa := _limitar_ip(pedido, request)) is not None:
+        return recusa
+    # Antes de abrir o stream, para a recusa sair com o status certo.
+    pedido, recusa = await _conferir_hotspot(pedido)
+    if recusa is not None:
         return recusa
     return _RespostaSSE(_eventos_agente(pedido, request.app.state.config))
 

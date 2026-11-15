@@ -191,7 +191,9 @@ MAX_CARACTERES_PERGUNTA = 500
 class PedidoAgente(BaseModel):
     # 500: api-contract.md do frontend (MAX_QUESTION_CHARS no agentApi.ts).
     question: str = Field(min_length=1, max_length=MAX_CARACTERES_PERGUNTA)
-    hotspot_id: str | None = None  # gaveta aberta no app; o app sempre manda
+    # Gaveta aberta no app; o app sempre manda. Aqui só o formato do id: se ele está
+    # no hotspots.geojson, o endpoint confere (cass/main.py, _conferir_hotspot).
+    hotspot_id: Annotated[str, Field(pattern=PADRAO_ID, max_length=64)] | None = None
     language: Literal["pt", "en"]
 
 
