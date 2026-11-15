@@ -4,7 +4,6 @@ Os dados e a indisponibilidade da previsão são locais e reproduzíveis. Apenas
 o Gemini usa a Vertex AI, autenticada por ADC, como no serviço.
 """
 
-import json
 import os
 import threading
 from collections.abc import Callable, Iterator
