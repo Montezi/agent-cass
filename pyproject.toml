@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Testes que chamam o Gemini de verdade ficam fora da execução padrão.
+# Para rodá-los: pytest -q -m gemini
+addopts = "--strict-markers -m 'not gemini'"
+markers = [
+    "gemini: chama o Gemini de verdade na Vertex AI (rode com: pytest -m gemini)",
+]

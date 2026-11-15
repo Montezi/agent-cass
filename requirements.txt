@@ -1,0 +1,8 @@
+strands-agents[gemini]
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+python-dotenv
+pytest
+respx
