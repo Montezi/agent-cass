@@ -114,15 +114,24 @@ gcloud run deploy "$SERVICO" \
   --source . \
   --region "$REGIAO" \
   --service-account "$CONTA" \
-  --memory=8Gi \
-  --cpu=4 \
-  --no-cpu-throttling \
+  --memory=2Gi \
+  --cpu=1 \
   --cpu-boost \
   --max-instances=2 \
   --timeout=60 \
   --allow-unauthenticated \
   --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GEMINI_MODEL=${GEMINI_MODEL},APP_ORIGIN=${APP_ORIGIN},DADOS_BASE=${DADOS_BASE},CLIMA_URL=${CLIMA_URL},DECIDER_ATIVO=false,DECIDER_URL=http://127.0.0.1:8099/v1/systemone"
 ```
+
+Esta é a variante leve, sem o Decider: um só processo, que espera o Gemini a
+maior parte do tempo. Por isso bastam `--memory=2Gi --cpu=1`. Sem
+`--no-cpu-throttling`, o Cloud Run só aloca e cobra CPU enquanto atende um
+pedido, inclusive durante o stream SSE; o `--cpu-boost` dá CPU extra na subida a
+frio. Os 8 GiB, as 4 CPUs e o `--no-cpu-throttling` são da variante com Decider
+(seção abaixo), que mantém um modelo carregado em memória.
+
+O `--max-instances=2` é o teto de custo real: o limite por IP pode ser contornado
+com um `X-Forwarded-For` falso (ver `docs/guardrails.md`).
 
 O Cloud Build constrói a imagem e a guarda no Artifact Registry. No primeiro
 deploy, o CLI pode pedir para criar o repositório `cloud-run-source-deploy`.
@@ -307,7 +316,7 @@ O deploy usa os parâmetros solicitados: `--memory=8Gi --cpu=4
 --no-cpu-throttling --cpu-boost`. O ensaio local CPU observou RSS de 7,76 GiB e
 aquecimento de 23,5 s, antes da bateria. O consumo total inclui também o Cass;
 esses 8 GiB precisam ser validados com os dois processos e requisições reais.
-Os 2 GiB previstos no passo anterior eram apenas para a variante leve.
+A variante leve (seção 5) usa `--memory=2Gi --cpu=1 --cpu-boost`.
 Este passo não publicou serviços nem contratou infraestrutura. Consulte os resultados e limitações em
 [`avaliacao-decider.md`](avaliacao-decider.md).
 
