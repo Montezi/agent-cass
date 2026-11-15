@@ -1,13 +1,16 @@
 """Ferramentas do Cass (@tool do Strands). Todas só de leitura.
 
-Leem só {DADOS_BASE}/hotspots.geojson e {CLIMA_URL}, sempre com o id conferido contra
-a lista do hotspots.geojson. Falhas voltam como dado ({"erro": ...}), para o Gemini se
-corrigir, em vez de virar exceção. As fontes da resposta são montadas pelo código a
+Leem só {DADOS_BASE}/hotspots.geojson e as fontes da previsão (Meteomatics, Open-Meteo
+e {DADOS_BASE}/forecast-snapshot.json), sempre com o id conferido contra a lista do
+hotspots.geojson. A cadeia da previsão (previsao_do_hotspot) também serve a GET
+/api/clima. Falhas voltam como dado ({"erro": ...}), para o Gemini se corrigir, em vez
+de virar exceção. As fontes da resposta são montadas pelo código a
 partir do campo "fonte" (ou "fontes") de cada resultado: {"nome", "data", "url"}.
 """
 
+import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import wraps
 from time import monotonic
@@ -17,14 +20,21 @@ import httpx
 from pydantic import BaseModel, ValidationError
 from strands import tool
 
-from cass.config import carregar_config
+from cass.config import Configuracao, carregar_config
 from cass.formato import AVISO_DE_EXEMPLO, Idioma, formatar_data, formatar_dia
 from cass.formato import formatar_fonte, formatar_numero
-from cass.modelos import ClasseDominante, ColecaoHotspots, Hotspot, PrevisaoClima, PrevisaoSalva
+from cass.modelos import ClasseDominante, ColecaoHotspots, Hotspot, PrevisaoClima
+from cass.modelos import PrevisaoSalva, RespostaMeteomatics, RespostaOpenMeteo
 
-TIMEOUT_S = 5.0
+logger = logging.getLogger(__name__)
+
+TIMEOUT_S = 5.0  # por fonte: hotspots.geojson, Meteomatics, Open-Meteo e snapshot
 CACHE_TTL_S = 300.0  # o hotspots.geojson só muda num deploy do frontend
-CACHE_CLIMA_TTL_S = 600.0  # evita repetir a /api/clima quando o alerta usa a previsão
+CACHE_CLIMA_TTL_S = 600.0  # o forecast-snapshot.json
+CACHE_PREVISAO_TTL_S = 1800.0  # por hotspot, qualquer que seja a fonte que serviu
+DIAS_DA_PREVISAO = 7  # o que a cadeia busca; o previsao_tempo pede de 1 a 7
+URL_METEOMATICS = "https://api.meteomatics.com"
+URL_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 DIAS_MIN, DIAS_MAX, DIAS_PADRAO = 1, 7, 3
 PREVISAO_VELHA = timedelta(days=3)  # api-contract.md: só referência, nunca dispara aviso
 SEM_STATS = {"disponivel": False, "motivo": "ainda não calculado pelo pipeline"}
@@ -101,10 +111,17 @@ def _ler(url: str, nome: str, modelo: type[M], ttl: float) -> M:
     guardado = _cache.get(url)
     if guardado is not None and monotonic() < guardado.validade:
         return guardado.valor
+    valor = _validar(url, nome, modelo)
+    _cache[url] = _Guardado(valor, monotonic() + ttl)
+    return valor
+
+
+def _validar(url: str, nome: str, modelo: type[M], auth: httpx.Auth | None = None) -> M:
+    """GET com timeout, validado contra o modelo; qualquer falha vira _Recusa."""
     try:
-        resposta = httpx.get(url, timeout=TIMEOUT_S)
+        resposta = httpx.get(url, timeout=TIMEOUT_S, auth=auth)
         resposta.raise_for_status()
-        valor = modelo.model_validate_json(resposta.content)
+        return modelo.model_validate_json(resposta.content)
     except httpx.TimeoutException as e:
         raise _Recusa(erro=f"{nome} não respondeu em {TIMEOUT_S:g} s", url=url) from e
     except httpx.HTTPStatusError as e:
@@ -115,8 +132,6 @@ def _ler(url: str, nome: str, modelo: type[M], ttl: float) -> M:
         raise _Recusa(
             erro=f"{nome} não segue o contrato de dados ({e.error_count()} erros)", url=url
         ) from e
-    _cache[url] = _Guardado(valor, monotonic() + ttl)
-    return valor
 
 
 def _colecao() -> tuple[ColecaoHotspots, str]:
@@ -136,13 +151,19 @@ def _hotspot(id: str) -> tuple[Hotspot, ColecaoHotspots, str]:
     )
 
 
-def ids_dos_hotspots() -> list[str] | None:
-    """Ids do hotspots.geojson (com o mesmo cache das ferramentas); None se não der para ler."""
+def hotspots_por_id() -> dict[str, Hotspot] | None:
+    """Hotspots do hotspots.geojson (mesmo cache das ferramentas); None se não der para ler."""
     try:
         colecao, _ = _colecao()
     except _Recusa:
         return None
-    return [h.properties.id for h in colecao.features]
+    return {h.properties.id: h for h in colecao.features}
+
+
+def ids_dos_hotspots() -> list[str] | None:
+    """Ids do hotspots.geojson, na ordem do arquivo; None se não der para ler."""
+    hotspots = hotspots_por_id()
+    return None if hotspots is None else list(hotspots)
 
 
 def _fonte(nome: str, data: date | None, url: str) -> dict[str, Any]:
@@ -271,45 +292,148 @@ def previsao_tempo(id: str, dias: int = DIAS_PADRAO) -> dict[str, Any]:
     if not DIAS_MIN <= dias <= DIAS_MAX:
         raise _Recusa(erro=f"dias deve ser de {DIAS_MIN} a {DIAS_MAX}", validos=list(range(1, 8)))
     hotspot, _, _ = _hotspot(id)
-    lon, lat = hotspot.geometry.coordinates
-    url = str(httpx.URL(carregar_config().clima_url, params={"hotspot": id, "lat": lat, "lon": lon}))
     try:
-        previsao = _ler(url, "a /api/clima", PrevisaoClima, CACHE_CLIMA_TTL_S)
-    except _Recusa as falha:
-        # Timeout, HTTP, conexão ou JSON fora do contrato: vale a previsão salva.
-        return _previsao_salva(id, dias, falha.dados["erro"])
+        # A mesma função da GET /api/clima, sem passar por HTTP (e com o mesmo cache).
+        obtida = previsao_do_hotspot(hotspot)
+    except PrevisaoIndisponivel as falha:
+        raise _Recusa(erro=f"nenhuma fonte de previsão serviu: {falha}") from falha
+    previsao = obtida.previsao
     em_json = previsao.model_dump(mode="json")
-    return {
-        "fonte": _fonte(FONTES_DE_PREVISAO[previsao.source], previsao.updated_at.date(), url),
+    resultado = {
+        "fonte": _fonte(FONTES_DE_PREVISAO[previsao.source], previsao.updated_at.date(), obtida.url),
         "hotspot_id": id,
         "atualizada_em": em_json["updated_at"],
         "so_referencia": _agora() - previsao.updated_at > PREVISAO_VELHA,
         "dias": em_json["days"][:dias],
     }
+    if previsao.source == "snapshot":
+        resultado |= {
+            "reserva": True,
+            "motivo_da_reserva": "; ".join(obtida.falhas),
+            "dados_de_exemplo": obtida.dados_de_exemplo,
+        }
+    return resultado
 
 
-def _previsao_salva(id: str, dias: int, motivo: str) -> dict[str, Any]:
-    """{DADOS_BASE}/forecast-snapshot.json, quando a /api/clima não serve."""
-    url = f"{carregar_config().dados_base.rstrip('/')}/forecast-snapshot.json"
-    try:
-        salva = _ler(url, "o forecast-snapshot.json", PrevisaoSalva, CACHE_CLIMA_TTL_S)
-    except _Recusa as falha:
-        raise _Recusa(
-            erro=f"{motivo}; a previsão salva também falhou: {falha.dados['erro']}", url=url
-        ) from falha
+# ---------- previsão: Meteomatics -> Open-Meteo -> forecast-snapshot.json ----------
+
+
+@dataclass(frozen=True)
+class PrevisaoObtida:
+    previsao: PrevisaoClima  # o corpo da GET /api/clima (api-contract.md)
+    url: str  # de onde veio, para a fonte do Cass
+    dados_de_exemplo: bool = False  # metadata.sample do forecast-snapshot.json
+    falhas: tuple[str, ...] = ()  # por que as fontes anteriores não serviram
+
+
+class PrevisaoIndisponivel(Exception):
+    """Nenhuma das fontes serviu; `falhas` traz o motivo de cada uma, na ordem."""
+
+    def __init__(self, falhas: list[str]) -> None:
+        super().__init__("; ".join(falhas))
+        self.falhas = tuple(falhas)
+
+
+def previsao_do_hotspot(hotspot: Hotspot) -> PrevisaoObtida:
+    """Chuva por dia no hotspot: Meteomatics (se houver credenciais), Open-Meteo e,
+    por fim, a última previsão salva. Cada fonte tem TIMEOUT_S; o resultado fica em
+    cache por 30 min por hotspot (e coordenadas), qualquer que seja a fonte.
+    """
+    lon, lat = hotspot.geometry.coordinates
+    chave = f"previsao:{hotspot.properties.id}:{lat},{lon}"
+    guardado = _cache.get(chave)
+    if guardado is not None and monotonic() < guardado.validade:
+        return guardado.valor
+    config = carregar_config()
+    falhas: list[str] = []
+    for fonte in _fontes_de_previsao(config):
+        try:
+            obtida = fonte(hotspot, config)
+        except _Recusa as falha:
+            falhas.append(falha.dados["erro"])
+            continue
+        obtida = replace(obtida, falhas=tuple(falhas))
+        if falhas:
+            logger.warning("previsão de %s pela reserva: %s", hotspot.properties.id, "; ".join(falhas))
+        _cache[chave] = _Guardado(obtida, monotonic() + CACHE_PREVISAO_TTL_S)
+        return obtida
+    logger.warning("previsão de %s indisponível: %s", hotspot.properties.id, "; ".join(falhas))
+    raise PrevisaoIndisponivel(falhas)
+
+
+_Fonte = Callable[[Hotspot, Configuracao], PrevisaoObtida]
+
+
+def _fontes_de_previsao(config: Configuracao) -> list[_Fonte]:
+    com_meteomatics = bool(config.meteomatics_user and config.meteomatics_password)
+    return [*([_da_meteomatics] if com_meteomatics else []), _da_open_meteo, _do_snapshot]
+
+
+def _da_meteomatics(hotspot: Hotspot, config: Configuracao) -> PrevisaoObtida:
+    # precip_24h às 00:00Z de D+1 é a chuva do dia D (UTC): os intervalos da
+    # Meteomatics terminam no horário pedido.
+    lon, lat = hotspot.geometry.coordinates
+    amanha = datetime.combine(_agora().date() + timedelta(days=1), datetime.min.time(), UTC)
+    fim = amanha + timedelta(days=DIAS_DA_PREVISAO - 1)
+    periodo = f"{amanha:%Y-%m-%dT%H:%M:%SZ}--{fim:%Y-%m-%dT%H:%M:%SZ}:P1D"
+    url = f"{URL_METEOMATICS}/{periodo}/precip_24h:mm/{lat},{lon}/json"
+    auth = httpx.BasicAuth(config.meteomatics_user, config.meteomatics_password)
+    nome = "a Meteomatics"
+    resposta = _validar(url, nome, RespostaMeteomatics, auth)
+    dias = [
+        _dia((v.date - timedelta(days=1)).date(), v.value)
+        for v in resposta.data[0].coordinates[0].dates
+    ]
+    return _obtida(nome, "meteomatics", resposta.dateGenerated, dias, url)
+
+
+def _da_open_meteo(hotspot: Hotspot, config: Configuracao) -> PrevisaoObtida:
+    lon, lat = hotspot.geometry.coordinates
+    url = str(httpx.URL(URL_OPEN_METEO, params={
+        "latitude": lat, "longitude": lon, "daily": "precipitation_sum",
+        "forecast_days": DIAS_DA_PREVISAO, "timezone": "GMT",
+    }))
+    nome = "a Open-Meteo"
+    diario = _validar(url, nome, RespostaOpenMeteo).daily
+    dias = []
+    for dia, chuva in zip(diario.time, diario.precipitation_sum, strict=True):
+        if chuva is None:
+            break  # depois do primeiro dia sem modelo, a série acabou
+        dias.append(_dia(dia, chuva))
+    # A Open-Meteo não diz quando o modelo rodou: vale a hora da consulta.
+    return _obtida(nome, "open-meteo", _agora(), dias, url)
+
+
+def _do_snapshot(hotspot: Hotspot, config: Configuracao) -> PrevisaoObtida:
+    url = f"{config.dados_base.rstrip('/')}/forecast-snapshot.json"
+    nome = "o forecast-snapshot.json"
+    salva = _ler(url, nome, PrevisaoSalva, CACHE_CLIMA_TTL_S)
+    id = hotspot.properties.id
     if id not in salva.forecasts:
-        raise _Recusa(erro=f"{motivo}; a previsão salva não tem o hotspot {id!r}", url=url)
-    em_json = salva.model_dump(mode="json")
-    return {
-        "fonte": _fonte(FONTES_DE_PREVISAO["snapshot"], salva.updated_at.date(), url),
-        "hotspot_id": id,
-        "atualizada_em": em_json["updated_at"],
-        "so_referencia": _agora() - salva.updated_at > PREVISAO_VELHA,
-        "reserva": True,
-        "motivo_da_reserva": motivo,
-        "dados_de_exemplo": salva.metadata.sample,
-        "dias": em_json["forecasts"][id][:dias],
-    }
+        raise _Recusa(erro=f"{nome} não tem o hotspot {id!r}", url=url)
+    dias = [_dia(d.date, d.precipitation_mm) for d in salva.forecasts[id]]
+    obtida = _obtida(nome, "snapshot", salva.updated_at, dias, url)
+    return replace(obtida, dados_de_exemplo=salva.metadata.sample)
+
+
+def _dia(dia: date, chuva: float) -> dict[str, Any]:
+    return {"date": dia.isoformat(), "precipitation_mm": round(chuva, 1)}
+
+
+def _obtida(
+    nome: str, fonte: str, gerada: datetime, dias: list[dict[str, Any]], url: str
+) -> PrevisaoObtida:
+    """Monta o corpo da GET /api/clima; fora do contrato, passa para a próxima fonte."""
+    try:
+        previsao = PrevisaoClima.model_validate({
+            "source": fonte,
+            # Em UTC e sem microssegundos: o z.iso.datetime() do frontend só aceita "Z".
+            "updated_at": gerada.astimezone(UTC).replace(microsecond=0),
+            "days": dias[:DIAS_DA_PREVISAO],
+        })
+    except ValidationError as e:
+        raise _Recusa(erro=f"{nome} não segue o contrato da /api/clima", url=url) from e
+    return PrevisaoObtida(previsao=previsao, url=url)
 
 
 @tool

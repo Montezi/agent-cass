@@ -1,6 +1,6 @@
 """Camada HTTP do Cass: recebe o pedido e chama o agente.
 
-O formato público é o de docs/api-contract.md (POST /api/agente).
+O formato público é o de docs/api-contract.md (POST /api/agente e GET /api/clima).
 """
 
 import asyncio
@@ -8,20 +8,22 @@ import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from typing import Annotated
 
 from anyio import CancelScope
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
 
 from cass.agente import TEMPO_LIMITE_S, AgenteDemorou, responder
 from cass.config import Configuracao, carregar_config
 from cass.contrato import para_contrato, resposta_de_erro
-from cass.ferramentas import ids_dos_hotspots
+from cass.ferramentas import PrevisaoIndisponivel, hotspots_por_id, ids_dos_hotspots
+from cass.ferramentas import previsao_do_hotspot
 from cass.guardrails import avaliar_entrada
 from cass.hooks import EventoProgresso, ProgressoERegistro
 from cass.limites import CORSConfigurado, LimitadorPorIP, LimiteDeCorpo, verificar_limite_ip
-from cass.modelos import PedidoAgente, RespostaAgente, RespostaCass
+from cass.modelos import PADRAO_ID, PedidoAgente, PrevisaoClima, RespostaAgente, RespostaCass
 from cass.verificacao import validar_resposta
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,50 @@ app.add_middleware(CORSConfigurado)
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
+
+
+# O app manda lat e lon do próprio hotspots.geojson (String() do número do JSON), então
+# coincidem; a folga só cobre arredondamento.
+TOLERANCIA_GRAUS = 1e-6
+
+
+@app.get("/api/clima", response_model=PrevisaoClima)
+def api_clima(
+    hotspot: Annotated[str, Query(pattern=PADRAO_ID, max_length=64)],
+    lat: Annotated[float, Query(ge=-90, le=90, allow_inf_nan=False)],
+    lon: Annotated[float, Query(ge=-180, le=180, allow_inf_nan=False)],
+) -> PrevisaoClima | JSONResponse:
+    """Chuva por dia no hotspot (api-contract.md): Meteomatics, Open-Meteo ou snapshot.
+
+    Só hotspots do hotspots.geojson, com as coordenadas de lá: o serviço não consulta
+    as fontes para um ponto qualquer. Síncrona: o FastAPI a roda numa thread.
+    """
+    hotspots = hotspots_por_id()
+    if hotspots is None:
+        logger.warning("hotspots.geojson indisponível na /api/clima")
+        return JSONResponse(status_code=503, content={"detail": "lista de hotspots indisponível"})
+    alvo = hotspots.get(hotspot)
+    if alvo is None:
+        return _erro_de_consulta(
+            "hotspot_desconhecido", "hotspot", "hotspot fora do hotspots.geojson",
+            {"validos": list(hotspots)},
+        )
+    lon_do_hotspot, lat_do_hotspot = alvo.geometry.coordinates
+    if abs(lat - lat_do_hotspot) > TOLERANCIA_GRAUS or abs(lon - lon_do_hotspot) > TOLERANCIA_GRAUS:
+        return _erro_de_consulta(
+            "coordenadas_do_hotspot", "lat", "lat e lon precisam ser as do hotspot no hotspots.geojson"
+        )
+    try:
+        return previsao_do_hotspot(alvo).previsao
+    except PrevisaoIndisponivel:
+        # Os motivos ficam no log (cass.ferramentas); o app lê o snapshot por conta própria.
+        return JSONResponse(status_code=503, content={"detail": "nenhuma fonte de previsão respondeu"})
+
+
+def _erro_de_consulta(tipo: str, campo: str, msg: str, ctx: dict | None = None) -> JSONResponse:
+    """422 no formato de erro de validação do FastAPI, sem refletir o valor recebido."""
+    erro = {"type": tipo, "loc": ["query", campo], "msg": msg, **({"ctx": ctx} if ctx else {})}
+    return JSONResponse(status_code=422, content={"detail": [erro]})
 
 
 @app.post("/api/agente", response_model=RespostaAgente)

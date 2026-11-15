@@ -49,12 +49,12 @@ agent-cass/
 ├── cass/
 │   ├── __init__.py
 │   ├── config.py        # lê as variáveis de ambiente
-│   ├── main.py          # FastAPI: /health e /api/agente
+│   ├── main.py          # FastAPI: /health, /api/agente e /api/clima
 │   ├── agente.py        # monta o Agent do Strands
 │   ├── contrato.py      # RespostaCass -> formato de docs/api-contract.md
 │   ├── formato.py       # datas, números e fontes em texto (igual ao frontend)
 │   ├── modelos.py       # Pydantic: contrato de dados, PedidoAgente/RespostaAgente, RespostaCass
-│   ├── ferramentas.py   # as 8 ferramentas (@tool)
+│   ├── ferramentas.py   # as 8 ferramentas (@tool) e a cadeia da previsão (/api/clima)
 │   ├── guardrails.py    # decider_sim, PortaoDeFerramentas, LimpaDados, camadas 1 e 4
 │   ├── steering.py      # SteeringCass
 │   └── hooks.py         # ProgressoERegistro

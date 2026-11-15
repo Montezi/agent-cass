@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,20 +26,17 @@ from cass.ferramentas import (
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
 DADOS_BASE = "http://dados.teste/dados"
 URL = f"{DADOS_BASE}/hotspots.geojson"
-CLIMA_URL = "http://clima.teste/api/clima"
+URL_METEOMATICS = "https://api.meteomatics.com"
+URL_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 IDS = ["norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", "kariba", "borneo"]
 SEM_STATS = {"disponivel": False, "motivo": "ainda não calculado pelo pipeline"}
 AGORA = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-PREVISAO = {
-    "source": "meteomatics",
-    "updated_at": "2026-11-14T09:00:00Z",
-    "days": [
-        {"date": "2026-11-15", "precipitation_mm": 18},
-        {"date": "2026-11-16", "precipitation_mm": 6.5},
-        {"date": "2026-11-17", "precipitation_mm": 0},
-        {"date": "2026-11-18", "precipitation_mm": 2},
-    ],
-}
+DIAS = [
+    {"date": "2026-11-15", "precipitation_mm": 18},
+    {"date": "2026-11-16", "precipitation_mm": 6.5},
+    {"date": "2026-11-17", "precipitation_mm": 0},
+    {"date": "2026-11-18", "precipitation_mm": 2},
+]
 URL_SNAPSHOT = f"{DADOS_BASE}/forecast-snapshot.json"
 # Formato do forecastSnapshotSchema do frontend.
 SNAPSHOT = {
@@ -59,7 +56,8 @@ SNAPSHOT = {
 def ambiente(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "projeto-teste")
     monkeypatch.setenv("DADOS_BASE", DADOS_BASE)
-    monkeypatch.setenv("CLIMA_URL", CLIMA_URL)
+    monkeypatch.setenv("METEOMATICS_USER", "usuario-teste")
+    monkeypatch.setenv("METEOMATICS_PASSWORD", "senha-teste")
     monkeypatch.setenv("APP_ORIGIN", "http://app.teste")
     monkeypatch.setattr(ferramentas, "_agora", lambda: AGORA)
     ferramentas.limpar_cache()
@@ -80,11 +78,40 @@ def rota(respx_mock: respx.MockRouter) -> respx.Route:
     )
 
 
+def meteomatics(dias: list[dict] = DIAS, gerada: str = "2026-11-14T09:00:00Z") -> dict:
+    """Resposta da Meteomatics: precip_24h às 00:00Z de D+1 é a chuva do dia D."""
+    datas = [
+        {"date": f"{date.fromisoformat(d['date']) + timedelta(days=1)}T00:00:00Z", "value": d["precipitation_mm"]}
+        for d in dias
+    ]
+    return {
+        "version": "3.0", "user": "usuario-teste", "dateGenerated": gerada, "status": "OK",
+        "data": [{"parameter": "precip_24h:mm", "coordinates": [{"lat": -30.0, "lon": -51.2, "dates": datas}]}],
+    }
+
+
 @pytest.fixture
 def clima(respx_mock: respx.MockRouter) -> respx.Route:
-    return respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json=PREVISAO)
+    """A primeira fonte da cadeia (Meteomatics) respondendo."""
+    return respx_mock.get(url__startswith=URL_METEOMATICS).mock(
+        return_value=httpx.Response(200, json=meteomatics())
     )
+
+
+@pytest.fixture
+def ao_vivo_fora(respx_mock: respx.MockRouter) -> None:
+    """Meteomatics e Open-Meteo com HTTP 500: só sobra a previsão salva."""
+    respx_mock.get(url__startswith=URL_METEOMATICS).mock(return_value=httpx.Response(500))
+    respx_mock.get(url__startswith=URL_OPEN_METEO).mock(return_value=httpx.Response(500))
+
+
+def ao_vivo_falha(respx_mock: respx.MockRouter, falha: httpx.Response | Exception) -> None:
+    for url in (URL_METEOMATICS, URL_OPEN_METEO):
+        rota = respx_mock.get(url__startswith=url)
+        if isinstance(falha, Exception):
+            rota.mock(side_effect=falha)
+        else:
+            rota.mock(return_value=falha)
 
 
 @pytest.fixture
@@ -286,14 +313,15 @@ def test_previsao_tempo(rota: respx.Route, clima: respx.Route) -> None:
     assert_e_json(resultado)
 
 
-def test_previsao_tempo_chama_a_api_clima_como_o_contrato(
-    rota: respx.Route, clima: respx.Route
+def test_previsao_tempo_chama_a_cadeia_direto_sem_a_api_clima(
+    rota: respx.Route, clima: respx.Route, respx_mock: respx.MockRouter
 ) -> None:
     previsao_tempo("guaiba-rs")
 
+    # Só o hotspots.geojson e a Meteomatics: nenhum GET para a /api/clima.
+    assert [str(c.request.url) for c in respx_mock.calls] == [URL, str(clima.calls.last.request.url)]
     pedido = clima.calls.last.request
-    assert str(pedido.url).startswith(CLIMA_URL + "?")
-    assert dict(pedido.url.params) == {"hotspot": "guaiba-rs", "lat": "-30.0", "lon": "-51.2"}
+    assert pedido.url.path.endswith("/precip_24h:mm/-30.0,-51.2/json")
     assert pedido.extensions["timeout"]["read"] == 5.0
 
 
@@ -311,71 +339,78 @@ def test_previsao_tempo_recusa_dias_fora_de_1_a_7(
     assert clima.call_count == 0
 
 
-@pytest.mark.parametrize(
-    ("fonte", "nome"),
-    [("meteomatics", "Meteomatics"), ("open-meteo", "Open-Meteo"), ("snapshot", "Snapshot")],
-)
-def test_previsao_tempo_repassa_a_fonte(
-    rota: respx.Route, respx_mock: respx.MockRouter, fonte: str, nome: str
-) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json={**PREVISAO, "source": fonte})
-    )
+def test_previsao_tempo_devolve_7_dias(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
+    dias = [{"date": f"2026-11-{15 + i}", "precipitation_mm": i} for i in range(7)]
+    respx_mock.get(url__startswith=URL_METEOMATICS).respond(200, json=meteomatics(dias))
 
-    assert previsao_tempo("guaiba-rs")["fonte"]["nome"] == nome
+    assert previsao_tempo("guaiba-rs", 7)["dias"] == dias
+
+
+def test_previsao_tempo_repassa_a_fonte_open_meteo(
+    rota: respx.Route, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get(url__startswith=URL_METEOMATICS).respond(500)
+    respx_mock.get(url__startswith=URL_OPEN_METEO).respond(200, json={
+        "daily_units": {"time": "iso8601", "precipitation_sum": "mm"},
+        "daily": {"time": ["2026-11-15", "2026-11-16"], "precipitation_sum": [4.2, 0.0]},
+    })
+
+    resultado = previsao_tempo("guaiba-rs")
+
+    # Sem a hora do modelo, a Open-Meteo vale a partir da consulta (AGORA).
+    assert resultado["fonte"]["nome"] == "Open-Meteo"
+    assert resultado["atualizada_em"] == "2026-11-14T12:00:00Z"
+    assert resultado["dias"] == [
+        {"date": "2026-11-15", "precipitation_mm": 4.2},
+        {"date": "2026-11-16", "precipitation_mm": 0.0},
+    ]
+    assert "reserva" not in resultado
 
 
 def test_previsao_antiga_e_so_referencia(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
     # api-contract.md: mais de 3 dias, só referência; nunca dispara aviso de chuva.
-    respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json={**PREVISAO, "updated_at": "2026-11-10T09:00:00Z"})
+    respx_mock.get(url__startswith=URL_METEOMATICS).respond(
+        200, json=meteomatics(gerada="2026-11-10T09:00:00Z")
     )
 
     assert previsao_tempo("guaiba-rs")["so_referencia"] is True
 
 
 @pytest.mark.parametrize(
-    "resposta",
+    "falha",
     [
         pytest.param(httpx.ReadTimeout("demorou"), id="timeout"),
         pytest.param(httpx.Response(500), id="http-500"),
-        pytest.param(httpx.Response(200, json={**PREVISAO, "source": "accuweather"}), id="fonte"),
-        pytest.param(httpx.Response(200, json={**PREVISAO, "days": []}), id="sem-dias"),
-        pytest.param(
-            httpx.Response(200, json={**PREVISAO, "days": [{"date": "2026-11-15", "precipitation_mm": -1}]}),
-            id="chuva-negativa",
-        ),
+        pytest.param(httpx.Response(200, json={"status": "ERROR"}), id="fora-do-formato"),
     ],
 )
-def test_falha_na_api_clima_e_sem_reserva_vira_erro(
+def test_todas_as_fontes_fora_vira_erro(
     rota: respx.Route,
     respx_mock: respx.MockRouter,
     sem_reserva: respx.Route,
-    resposta: httpx.Response | Exception,
+    falha: httpx.Response | Exception,
 ) -> None:
-    rota_clima = respx_mock.get(url__startswith=CLIMA_URL)
-    if isinstance(resposta, Exception):
-        rota_clima.mock(side_effect=resposta)
-    else:
-        rota_clima.mock(return_value=resposta)
+    ao_vivo_falha(respx_mock, falha)
 
     resultado = previsao_tempo("guaiba-rs")
 
-    assert "a previsão salva também falhou" in resultado["erro"]
+    erro = resultado["erro"]
+    assert erro.startswith("nenhuma fonte de previsão serviu: ")
+    assert "a Meteomatics" in erro and "a Open-Meteo" in erro and "o forecast-snapshot.json" in erro
     assert "fonte" not in resultado
     assert sem_reserva.call_count == 1
     assert_e_json(resultado)
 
 
-def test_timeout_na_api_clima_diz_o_tempo(
+def test_timeout_nas_fontes_diz_o_tempo(
     rota: respx.Route, respx_mock: respx.MockRouter, sem_reserva: respx.Route
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(side_effect=httpx.ConnectTimeout("demorou"))
+    ao_vivo_falha(respx_mock, httpx.ConnectTimeout("demorou"))
 
-    assert "5 s" in previsao_tempo("guaiba-rs")["erro"]
+    assert "não respondeu em 5 s" in previsao_tempo("guaiba-rs")["erro"]
 
 
-# ---------- previsão salva (forecast-snapshot.json) quando a /api/clima falha ----------
+# ---------- previsão salva (forecast-snapshot.json), o último degrau ----------
 
 
 @pytest.mark.parametrize(
@@ -385,26 +420,23 @@ def test_timeout_na_api_clima_diz_o_tempo(
         pytest.param(httpx.ConnectError("recusou"), id="sem-conexao"),
         pytest.param(httpx.Response(503), id="http-503"),
         pytest.param(httpx.Response(200, text="<html>"), id="nao-e-json"),
-        pytest.param(httpx.Response(200, json={**PREVISAO, "source": "accuweather"}), id="fora-do-contrato"),
+        pytest.param(httpx.Response(200, json={"status": "OK"}), id="fora-do-formato"),
     ],
 )
-def test_falha_na_api_clima_usa_a_previsao_salva(
+def test_falha_ao_vivo_usa_a_previsao_salva(
     rota: respx.Route,
     respx_mock: respx.MockRouter,
     reserva: respx.Route,
     falha: httpx.Response | Exception,
 ) -> None:
-    rota_clima = respx_mock.get(url__startswith=CLIMA_URL)
-    if isinstance(falha, Exception):
-        rota_clima.mock(side_effect=falha)
-    else:
-        rota_clima.mock(return_value=falha)
+    ao_vivo_falha(respx_mock, falha)
 
     resultado = previsao_tempo("guaiba-rs", 2)
 
     assert resultado["fonte"] == {"nome": "Snapshot", "data": "2026-11-14", "url": URL_SNAPSHOT}
     assert resultado["reserva"] is True
-    assert resultado["motivo_da_reserva"]
+    assert "a Meteomatics" in resultado["motivo_da_reserva"]
+    assert "a Open-Meteo" in resultado["motivo_da_reserva"]
     assert resultado["atualizada_em"] == "2026-11-14T09:00:00Z"
     assert resultado["dias"] == [
         {"date": "2026-11-15", "precipitation_mm": 12},
@@ -414,19 +446,20 @@ def test_falha_na_api_clima_usa_a_previsao_salva(
 
 
 def test_previsao_ao_vivo_nao_le_a_salva(
-    rota: respx.Route, clima: respx.Route, reserva: respx.Route
+    rota: respx.Route, clima: respx.Route, reserva: respx.Route, respx_mock: respx.MockRouter
 ) -> None:
+    open_meteo = respx_mock.get(url__startswith=URL_OPEN_METEO)
+
     resultado = previsao_tempo("guaiba-rs")
 
     assert resultado["fonte"]["nome"] == "Meteomatics"
     assert "reserva" not in resultado
-    assert reserva.call_count == 0
+    assert open_meteo.call_count == reserva.call_count == 0
 
 
 def test_previsao_salva_de_exemplo_marca_dados_de_exemplo(
-    rota: respx.Route, respx_mock: respx.MockRouter
+    rota: respx.Route, respx_mock: respx.MockRouter, ao_vivo_fora: None
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(return_value=httpx.Response(500))
     respx_mock.get(URL_SNAPSHOT).mock(
         return_value=httpx.Response(200, json={**SNAPSHOT, "metadata": {"sample": True}})
     )
@@ -435,9 +468,8 @@ def test_previsao_salva_de_exemplo_marca_dados_de_exemplo(
 
 
 def test_previsao_salva_antiga_e_so_referencia(
-    rota: respx.Route, respx_mock: respx.MockRouter
+    rota: respx.Route, respx_mock: respx.MockRouter, ao_vivo_fora: None
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(return_value=httpx.Response(500))
     respx_mock.get(URL_SNAPSHOT).mock(
         return_value=httpx.Response(200, json={**SNAPSHOT, "updated_at": "2026-11-10T09:00:00Z"})
     )
@@ -449,9 +481,8 @@ def test_previsao_salva_antiga_e_so_referencia(
 
 
 def test_previsao_salva_sem_o_hotspot_vira_erro(
-    rota: respx.Route, respx_mock: respx.MockRouter
+    rota: respx.Route, respx_mock: respx.MockRouter, ao_vivo_fora: None
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(return_value=httpx.Response(500))
     respx_mock.get(URL_SNAPSHOT).mock(
         return_value=httpx.Response(200, json={**SNAPSHOT, "forecasts": {"kariba": SNAPSHOT["forecasts"]["guaiba-rs"]}})
     )
@@ -471,19 +502,16 @@ def test_previsao_salva_sem_o_hotspot_vira_erro(
     ],
 )
 def test_previsao_salva_fora_do_contrato_vira_erro(
-    rota: respx.Route, respx_mock: respx.MockRouter, snapshot: dict
+    rota: respx.Route, respx_mock: respx.MockRouter, ao_vivo_fora: None, snapshot: dict
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(return_value=httpx.Response(500))
     respx_mock.get(URL_SNAPSHOT).mock(return_value=httpx.Response(200, json=snapshot))
 
     assert "não segue o contrato" in previsao_tempo("guaiba-rs")["erro"]
 
 
 def test_alerta_usa_a_previsao_salva(
-    rota: respx.Route, respx_mock: respx.MockRouter, reserva: respx.Route
+    rota: respx.Route, ao_vivo_fora: None, reserva: respx.Route
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(side_effect=httpx.ConnectTimeout("demorou"))
-
     resultado = rascunhar_alerta("guaiba-rs")
 
     assert "12 mm em 15 nov" in resultado["rascunho"]
@@ -579,7 +607,7 @@ def test_alerta_nao_inventa_numeros(respx_mock: respx.MockRouter, clima: respx.R
 def test_alerta_sem_previsao_ainda_sai(
     rota: respx.Route, respx_mock: respx.MockRouter, sem_reserva: respx.Route
 ) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(side_effect=httpx.ConnectTimeout("demorou"))
+    ao_vivo_falha(respx_mock, httpx.ConnectTimeout("demorou"))
 
     resultado = rascunhar_alerta("guaiba-rs")
 
@@ -588,8 +616,8 @@ def test_alerta_sem_previsao_ainda_sai(
 
 
 def test_alerta_com_previsao_antiga_avisa(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json={**PREVISAO, "updated_at": "2026-11-10T09:00:00Z"})
+    respx_mock.get(url__startswith=URL_METEOMATICS).respond(
+        200, json=meteomatics(gerada="2026-11-10T09:00:00Z")
     )
 
     texto = rascunhar_alerta("guaiba-rs")["rascunho"]
@@ -701,52 +729,3 @@ def test_erro_nao_fica_no_cache(respx_mock: respx.MockRouter) -> None:
 
     assert "erro" in listar_hotspots()
     assert len(listar_hotspots()["hotspots"]) == 6
-
-
-# ---------- /api/clima com no máximo 16 dias (api-contract.md) ----------
-
-
-def dias_de_previsao(quantos: int) -> list[dict[str, Any]]:
-    inicio = datetime(2026, 11, 15, tzinfo=UTC)
-    return [
-        {"date": (inicio + timedelta(days=i)).date().isoformat(), "precipitation_mm": i}
-        for i in range(quantos)
-    ]
-
-
-def test_previsao_com_16_dias_e_aceita(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json={**PREVISAO, "days": dias_de_previsao(16)})
-    )
-
-    resultado = previsao_tempo("guaiba-rs", 7)
-
-    assert resultado["fonte"]["nome"] == "Meteomatics"
-    assert len(resultado["dias"]) == 7
-
-
-def test_previsao_com_17_dias_e_fora_do_contrato_e_usa_a_salva(
-    rota: respx.Route, respx_mock: respx.MockRouter, reserva: respx.Route
-) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json={**PREVISAO, "days": dias_de_previsao(17)})
-    )
-
-    resultado = previsao_tempo("guaiba-rs")
-
-    assert resultado["reserva"] is True
-    assert "não segue o contrato" in resultado["motivo_da_reserva"]
-    assert resultado["fonte"]["nome"] == "Snapshot"
-
-
-def test_previsao_com_17_dias_e_sem_reserva_vira_erro(
-    rota: respx.Route, respx_mock: respx.MockRouter, sem_reserva: respx.Route
-) -> None:
-    respx_mock.get(url__startswith=CLIMA_URL).mock(
-        return_value=httpx.Response(200, json={**PREVISAO, "days": dias_de_previsao(17)})
-    )
-
-    erro = previsao_tempo("guaiba-rs")["erro"]
-
-    assert "a /api/clima não segue o contrato" in erro
-    assert "a previsão salva também falhou" in erro

@@ -183,6 +183,60 @@ class PrevisaoSalva(_Contrato):
     forecasts: dict[str, Annotated[list[DiaDePrevisao], Field(min_length=1)]]
 
 
+# ---------- Respostas das fontes da GET /api/clima ----------
+# Só os campos que o Cass usa. Chuva negativa (como o -999 de valor inválido) ou
+# ausente conta como fora do formato, e a cadeia passa para a próxima fonte.
+
+Chuva = Annotated[Numero, Field(ge=0)]
+
+
+class _ValorMeteomatics(_Contrato):
+    date: AwareDatetime
+    value: Chuva
+
+
+class _PontoMeteomatics(_Contrato):
+    dates: list[_ValorMeteomatics] = Field(min_length=1)
+
+
+class _ParametroMeteomatics(_Contrato):
+    parameter: Literal["precip_24h:mm"]
+    coordinates: list[_PontoMeteomatics] = Field(min_length=1, max_length=1)
+
+
+class RespostaMeteomatics(_Contrato):
+    """GET api.meteomatics.com/<início>--<fim>:P1D/precip_24h:mm/<lat>,<lon>/json."""
+
+    status: Literal["OK"]
+    dateGenerated: AwareDatetime  # noqa: N815 (nome da Meteomatics)
+    data: list[_ParametroMeteomatics] = Field(min_length=1, max_length=1)
+
+
+class _UnidadesOpenMeteo(_Contrato):
+    precipitation_sum: Literal["mm"]
+
+
+class _DiarioOpenMeteo(_Contrato):
+    time: list[DataAaaaMmDd] = Field(min_length=1)
+    # null: o modelo não cobre esse dia (costuma acontecer no fim da série).
+    precipitation_sum: list[Chuva | None]
+
+    @model_validator(mode="after")
+    def _um_valor_por_dia(self) -> Self:
+        if len(self.precipitation_sum) != len(self.time):
+            raise ValueError("precipitation_sum e time com tamanhos diferentes")
+        if self.precipitation_sum[0] is None:
+            raise ValueError("sem chuva prevista para o primeiro dia")
+        return self
+
+
+class RespostaOpenMeteo(_Contrato):
+    """GET api.open-meteo.com/v1/forecast?daily=precipitation_sum&timezone=GMT."""
+
+    daily_units: _UnidadesOpenMeteo
+    daily: _DiarioOpenMeteo
+
+
 # ---------- Contrato público do POST /api/agente (docs/api-contract.md) ----------
 # Espelho do zod agentAnswerSchema (frontend, src/features/cass/agentApi.ts).
 # Chaves em inglês, como no contrato.

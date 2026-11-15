@@ -38,9 +38,36 @@ comprova que o backend esteja funcionando (`CassChat.tsx:54`, `agentApi.ts:34`).
 
 O Cass obtém `DADOS_BASE/hotspots.geojson`, com prazo de 5 s e cache local de
 300 s. O prefetch e as ferramentas consultam esses dados quando precisam
-identificar ou explicar um hotspot. A previsão consulta `CLIMA_URL` com ID,
-latitude e longitude, com cache de 600 s. Ver
+identificar ou explicar um hotspot. A previsão (`previsao_tempo`) chama direto a
+mesma função da `GET /api/clima` deste serviço, sem HTTP e com o mesmo cache. Ver
 [`cass/ferramentas.py`](../cass/ferramentas.py).
+
+### `GET /api/clima?hotspot=<id>&lat=<lat>&lon=<lon>`
+
+Segue a seção `/api/clima` do `api-contract.md` e o `forecastResponseSchema` do
+frontend: `source`, `updated_at` (UTC, com `Z`) e `days` com até 7 itens de `date`
+e `precipitation_mm`.
+
+- **Pedido:** `hotspot` precisa estar no `hotspots.geojson` (senão 422, com os ids
+  válidos em `ctx.validos`). `lat` e `lon` precisam ser as do hotspot (senão 422):
+  as fontes só são consultadas nas coordenadas do `hotspots.geojson`, para a rota
+  não virar um proxy da conta da Meteomatics. Sem o `hotspots.geojson`, 503.
+- **Cadeia**, com prazo de 5 s por fonte:
+  1. **Meteomatics**, só se `METEOMATICS_USER` e `METEOMATICS_PASSWORD` existirem.
+     `precip_24h:mm` às 00:00Z de D+1 é a chuva do dia D (UTC); `updated_at` é o
+     `dateGenerated` da resposta.
+  2. **Open-Meteo** (sem chave): `daily=precipitation_sum`, `timezone=GMT`. A série
+     para no primeiro dia sem valor; `updated_at` é a hora da consulta, porque a
+     resposta não diz quando o modelo rodou.
+  3. **`{DADOS_BASE}/forecast-snapshot.json`**: os dias do hotspot e o `updated_at`
+     do arquivo.
+
+  Uma fonte que falha (timeout, HTTP, conexão, redirecionamento) ou sai do formato
+  (chuva negativa ou nula no primeiro dia, outra unidade) passa a vez para a
+  próxima. Se as três falharem, 503: o app lê o snapshot por conta própria.
+- **Cache** de 30 min por hotspot, qualquer que seja a fonte que serviu. Uma falha
+  total não fica em cache. Com as fontes ao vivo fora do ar, o primeiro pedido
+  pode levar 10 s até o snapshot, mais que os 8 s do app.
 
 As ferramentas `explicar_classe`, `hipotese` e `exposicao` ainda devolvem
 `SEM_STATS`: o backend não lê `stats/<id>.json`. Esse é um trabalho de integração
@@ -55,23 +82,16 @@ navegador não consulta diretamente NISAR/ASF, NOAA, Sentinel, FIRMS, JRC ou
 WorldPop. Essas fontes aparecem nas atribuições e no desenho do pipeline; sua
 ingestão científica não foi encontrada nesse repositório.
 
-O contrato de clima prevê Meteomatics → Open-Meteo → snapshot, mas a implementação
-do serviço Cloud Run `clima` também não está no frontend. O snapshot local é um
-fallback implementado; os dois fornecedores ainda precisam ser confirmados no
-repositório do serviço. Ver `docs/api-contract.md:60` do frontend.
-
-No Cass, `previsao_tempo` usa a mesma reserva: se a `CLIMA_URL` falhar (timeout,
-HTTP, conexão) ou não devolver JSON válido no contrato (inclusive com mais de 16
-dias em `days`), lê
-`{DADOS_BASE}/forecast-snapshot.json` (formato do `forecastSnapshotSchema`) e
-devolve a fonte "Snapshot" com a data do arquivo, `reserva: true` e o motivo. Se
-as duas falharem, devolve um erro com os dois motivos.
+No Cass, quando a previsão vem do snapshot, `previsao_tempo` devolve a fonte
+"Snapshot" com a data do arquivo, `reserva: true`, `motivo_da_reserva` (as falhas
+da Meteomatics e da Open-Meteo) e `dados_de_exemplo`. Se as três fontes falharem,
+devolve um erro com os três motivos. A `CLIMA_URL` não é mais lida.
 
 Há diferenças entre as cópias dos contratos: o frontend documenta dados v2
 (`baseline_pass`, `threshold_db`, `metadata.schema_version`, `generated_at`) e
 erros 400 para pedidos inválidos; este backend ainda valida com 422. O limite da
 pergunta (até 500 caracteres), a restrição do `hotspot_id` aos ids do
-`hotspots.geojson`, o corpo de até 2 KB (recusado com 413) e o `days` de até 16
+`hotspots.geojson`, o corpo de até 2 KB (recusado com 413) e o `days` de 1 a 16
 itens na `/api/clima` já seguem o frontend.
 A integração deve reconciliar
 o resto em um passo próprio, preservando o contrato público durante esta tarefa.

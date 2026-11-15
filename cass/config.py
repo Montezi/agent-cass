@@ -6,7 +6,7 @@ Os padrões espelham o .env.example.
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 PADROES: dict[str, str] = {
     "GOOGLE_CLOUD_LOCATION": "global",
@@ -35,6 +35,10 @@ class Configuracao:
     clima_url: str
     decider_ativo: bool
     decider_url: str
+    # Opcionais: sem os dois, a previsão começa na Open-Meteo. Fora do repr, para a
+    # senha não aparecer num log da configuração.
+    meteomatics_user: str = field(default="", repr=False)
+    meteomatics_password: str = field(default="", repr=False)
 
 
 def _ler(env: Mapping[str, str], nome: str) -> str:
@@ -66,4 +70,6 @@ def carregar_config(env: Mapping[str, str] | None = None) -> Configuracao:
         clima_url=_ler(env, "CLIMA_URL"),
         decider_ativo=_ler(env, "DECIDER_ATIVO").lower() in VERDADEIROS,
         decider_url=_ler(env, "DECIDER_URL"),
+        meteomatics_user=_ler(env, "METEOMATICS_USER"),
+        meteomatics_password=_ler(env, "METEOMATICS_PASSWORD"),
     )
