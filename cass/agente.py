@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 
 from google import genai
-from strands import Agent
+from strands import Agent, AgentSkills, Skill
 from strands.models.gemini import GeminiModel
 
 from cass.config import Configuracao
@@ -36,7 +37,9 @@ MAX_TOKENS_DE_SAIDA = 2048
 TEMPO_LIMITE_S = 20.0  # o app desiste depois disso
 TENTATIVAS_DE_SAIDA = 3  # chamadas inválidas à ferramenta de saída antes de desistir
 IDIOMAS: dict[str, str] = {"pt": "português", "en": "inglês"}
-FERRAMENTAS = [
+# Todas as ferramentas do Cass (apêndice B). Os resultados de qualquer uma contam para
+# fontes, dados de exemplo e hipótese.
+FERRAMENTAS_DO_CASS = [
     listar_hotspots,
     consultar_hotspot,
     explicar_classe,
@@ -46,7 +49,17 @@ FERRAMENTAS = [
     previsao_tempo,
     rascunhar_alerta,
 ]
-NOMES_DAS_FERRAMENTAS = {f.tool_name for f in FERRAMENTAS}
+# As que o agente recebe. explicar_classe, hipotese e exposicao ficam de fora até o
+# stats/<id>.json existir: hoje só devolvem "ainda não calculado" e custam uma chamada.
+FERRAMENTAS_ATIVAS = [
+    listar_hotspots,
+    consultar_hotspot,
+    contexto_enso,
+    previsao_tempo,
+    rascunhar_alerta,
+]
+NOMES_DAS_FERRAMENTAS = {f.tool_name for f in FERRAMENTAS_DO_CASS}
+PASTA_DAS_SKILLS = Path(__file__).resolve().parent.parent / "skills"
 
 Resultado = tuple[str, dict[str, Any]]  # (ferramenta, o dict que ela devolveu)
 
@@ -91,11 +104,37 @@ def criar_modelo(config: Configuracao) -> GeminiModel:
     )
 
 
+@lru_cache(maxsize=1)
+def carregar_skills() -> tuple[Skill, ...]:
+    """As skills de skills/<nome>/SKILL.md, lidas uma vez e guardadas em memória.
+
+    O plugin recebe Skill sem caminho (path = None): assim ele não põe o caminho do
+    servidor no prompt, não lista recursos e não lê arquivo nenhum depois da subida.
+    O Cass só ativa uma skill pelo nome; não tem ferramenta para ler arquivos.
+    """
+    skills = []
+    for pasta in sorted(PASTA_DAS_SKILLS.iterdir()):
+        arquivo = pasta / "SKILL.md"
+        if not arquivo.is_file():
+            continue
+        skill = Skill.from_content(arquivo.read_text(encoding="utf-8"), strict=True)
+        if skill.name != pasta.name:
+            raise ValueError(f"a skill {skill.name!r} precisa morar em skills/{skill.name}/")
+        skills.append(skill)
+    return tuple(skills)
+
+
 def criar_agente(config: Configuracao, idioma: Literal["pt", "en"] = "pt") -> Agent:
-    """Um Agent novo por pedido: ele guarda a conversa e recusa chamadas simultâneas."""
+    """Um Agent novo por pedido: ele guarda a conversa e recusa chamadas simultâneas.
+
+    O plugin de skills também é um por agente: ele guarda um mapa por agente, e um
+    plugin compartilhado acumularia uma entrada por pedido.
+    """
+    skills = carregar_skills()
     return Agent(
         model=criar_modelo(config),
-        tools=FERRAMENTAS,
+        tools=FERRAMENTAS_ATIVAS,
+        plugins=[AgentSkills(skills=list(skills), strict=True)] if skills else [],
         system_prompt=PROMPT_DE_SISTEMA.format(idioma=IDIOMAS[idioma]),
         callback_handler=None,  # sem imprimir a resposta no terminal do servidor
     )

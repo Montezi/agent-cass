@@ -14,7 +14,16 @@ from fastapi.testclient import TestClient
 from google import genai
 
 from cass import ferramentas, main
-from cass.agente import PROMPT_DE_SISTEMA, TEMPERATURA, criar_agente, criar_modelo
+from cass import agente as modulo_agente
+from cass.agente import (
+    FERRAMENTAS_ATIVAS,
+    FERRAMENTAS_DO_CASS,
+    PROMPT_DE_SISTEMA,
+    TEMPERATURA,
+    criar_agente,
+    criar_modelo,
+)
+from cass.ferramentas import explicar_classe, exposicao, hipotese
 from cass.config import Configuracao, carregar_config
 from cass.modelos import RespostaAgente
 
@@ -71,19 +80,26 @@ def test_modelo_e_reaproveitado(config: Configuracao) -> None:
     assert criar_modelo(config) is criar_modelo(config)
 
 
-def test_agente_tem_as_oito_ferramentas(config: Configuracao) -> None:
+def test_agente_registra_so_as_ferramentas_ativas_e_a_das_skills(config: Configuracao) -> None:
     agente = criar_agente(config)
 
     assert sorted(agente.tool_names) == [
         "consultar_hotspot",
         "contexto_enso",
-        "explicar_classe",
-        "exposicao",
-        "hipotese",
         "listar_hotspots",
         "previsao_tempo",
         "rascunhar_alerta",
+        "skills",  # do plugin AgentSkills: só ativa uma skill pelo nome
     ]
+
+
+def test_ferramentas_sem_stats_existem_mas_ficam_fora_do_agente(config: Configuracao) -> None:
+    nomes = set(criar_agente(config).tool_names)
+
+    for ferramenta in (explicar_classe, hipotese, exposicao):
+        assert ferramenta in FERRAMENTAS_DO_CASS
+        assert ferramenta not in FERRAMENTAS_ATIVAS
+        assert ferramenta.tool_name not in nomes
 
 
 def test_agente_tem_o_prompt_do_apendice_c(config: Configuracao) -> None:
@@ -141,3 +157,41 @@ def test_api_agente_responde_sobre_o_guaiba(
     # O fixture não tem nenhum valor medido: qualquer área citada seria inventada.
     for paragrafo in resposta.paragraphs:
         assert not re.search(r"\d\s*km", paragrafo), paragrafo
+
+
+@pytest.mark.gemini
+def test_pedir_alerta_ativa_a_skill_alerta_whatsapp(
+    dados_servidos: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for nome, valor in dotenv_values(RAIZ / ".env").items():
+        if valor:
+            monkeypatch.setenv(nome, valor)
+    monkeypatch.setenv("DADOS_BASE", dados_servidos)
+    monkeypatch.setenv("CLIMA_URL", f"{dados_servidos}/api/clima")  # 404: previsão indisponível
+    ferramentas.limpar_cache()
+    criados = []
+    original = modulo_agente.criar_agente
+
+    def capturar(*args, **kwargs):  # type: ignore[no-untyped-def]
+        criados.append(original(*args, **kwargs))
+        return criados[-1]
+
+    monkeypatch.setattr(modulo_agente, "criar_agente", capturar)
+
+    with TestClient(main.app) as cliente:
+        http = cliente.post(
+            "/api/agente",
+            json={"question": "Monte o alerta para o Rio Negro", "hotspot_id": "norte-amazonia", "language": "pt"},
+        )
+    print(f"\n--- resposta ---\n{json.dumps(http.json(), ensure_ascii=False, indent=2)}\n")
+
+    assert http.status_code == 200
+    chamadas = [
+        bloco["toolUse"]
+        for mensagem in criados[0].messages
+        for bloco in mensagem["content"]
+        if "toolUse" in bloco
+    ]
+    skills_ativadas = [c["input"].get("skill_name") for c in chamadas if c["name"] == "skills"]
+    assert "alerta-whatsapp" in skills_ativadas
+    assert "rascunhar_alerta" in RespostaAgente.model_validate(http.json()).tools

@@ -232,7 +232,7 @@ def test_contexto_enso(rota: respx.Route) -> None:
         "en": "above-average rainfall",
     }
     assert resultado["dados_de_exemplo"] is True
-    assert resultado["fonte"] == {"nome": "Alerta CassAAndra", "data": None, "url": URL}
+    assert resultado["fonte"] == {"nome": "NOAA CPC (contexto regional)", "data": None, "url": URL}
 
 
 def test_contexto_enso_sem_efeito(respx_mock: respx.MockRouter) -> None:

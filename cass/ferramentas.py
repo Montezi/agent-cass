@@ -31,7 +31,7 @@ SEM_STATS = {"disponivel": False, "motivo": "ainda não calculado pelo pipeline"
 CLASSES: list[str] = list(get_args(ClasseDominante))
 IDIOMAS: list[str] = ["pt", "en"]
 FONTE_RADAR = "NISAR"
-FONTE_CONTEXTO = "Alerta CassAAndra"
+FONTE_CONTEXTO = "NOAA CPC (contexto regional)"  # do enso_effect
 FONTES_DE_PREVISAO = {"meteomatics": "Meteomatics", "open-meteo": "Open-Meteo", "snapshot": "Snapshot"}
 ROTULOS_DAS_CLASSES: dict[str, dict[str, str]] = {  # i18n do frontend (pt.json, en.json)
     "pt": {

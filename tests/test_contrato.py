@@ -150,7 +150,7 @@ FONTES = [
     {"nome": "NISAR", "data": "2026-11-12", "ferramenta": "consultar_hotspot"},
     {"nome": "NISAR", "data": "2026-11-12", "ferramenta": "listar_hotspots"},
     {"nome": "Meteomatics", "data": "2026-11-14", "ferramenta": "previsao_tempo"},
-    {"nome": "Alerta CassAAndra", "data": "", "ferramenta": "contexto_enso"},
+    {"nome": "NOAA CPC (contexto regional)", "data": "", "ferramenta": "contexto_enso"},
 ]
 
 
@@ -159,11 +159,19 @@ FONTES = [
     [
         (
             "pt",
-            ["NISAR, 12 nov 2026", "Meteomatics, 14 nov 2026", "Alerta CassAAndra, data não informada"],
+            [
+                "NISAR, 12 nov 2026",
+                "Meteomatics, 14 nov 2026",
+                "NOAA CPC (contexto regional), data não informada",
+            ],
         ),
         (
             "en",
-            ["NISAR, Nov 12, 2026", "Meteomatics, Nov 14, 2026", "Alerta CassAAndra, date not provided"],
+            [
+                "NISAR, Nov 12, 2026",
+                "Meteomatics, Nov 14, 2026",
+                "NOAA CPC (contexto regional), date not provided",
+            ],
         ),
     ],
 )
