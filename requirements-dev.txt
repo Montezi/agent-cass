@@ -1,0 +1,4 @@
+# Serviço + testes. A imagem (Dockerfile) instala só o requirements.txt.
+-r requirements.txt
+pytest==9.2.0
+respx==0.23.1

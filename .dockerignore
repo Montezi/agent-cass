@@ -1,0 +1,14 @@
+# Fora do contexto do docker build. O .env nunca entra na imagem.
+.env
+.env.*
+!.env.example
+.venv/
+.git/
+.claude/
+.mcp.json
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+docs/

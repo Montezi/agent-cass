@@ -1,0 +1,9 @@
+# O que não sobe para o Cloud Build no `gcloud run deploy --source .`.
+# Começa pelo .gitignore (que já tira o .env e o .venv) e acrescenta o resto.
+#!include:.gitignore
+.gcloudignore
+.git/
+.claude/
+.mcp.json
+tests/
+docs/

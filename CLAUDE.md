@@ -65,13 +65,14 @@ agent-cass/
 │   ├── adr/             # ADR-AGT-001 em diante
 │   ├── data-contract.md # cópia do contrato do repositório do frontend
 │   └── plano-de-desenvolvimento.md
-├── requirements.txt  Dockerfile  start.sh  .env.example
+├── requirements.txt  requirements-dev.txt  Dockerfile  start.sh  .env.example
 ```
 
 ## Comandos
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements-dev.txt                           # serviço + testes (a imagem só usa o requirements.txt)
 uvicorn cass.main:app --reload --port 8080 --env-file .env   # rodar local
 pytest -q                                                     # testes rápidos
 pytest -q -m gemini                                           # testes com o Gemini
