@@ -5,13 +5,14 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 from google import genai
 from strands import Agent, AgentSkills, Skill
+from strands.interventions import Deny
 from strands.models.gemini import GeminiModel
 
 from cass.config import Configuracao
@@ -26,6 +27,7 @@ from cass.ferramentas import (
     rascunhar_alerta,
 )
 from cass.hooks import ProgressoERegistro
+from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
 
 logger = logging.getLogger(__name__)
@@ -152,6 +154,8 @@ def criar_agente(
     idioma: Literal["pt", "en"] = "pt",
     skills_injetadas: Iterable[str] = (),
     progresso: ProgressoERegistro | None = None,
+    portao: PortaoDeFerramentas | None = None,
+    limpa_dados: LimpaDados | None = None,
 ) -> Agent:
     """Um Agent novo por pedido: ele guarda a conversa e recusa chamadas simultâneas.
 
@@ -161,10 +165,19 @@ def criar_agente(
     """
     ja_na_mensagem = set(skills_injetadas)
     skills = [s for s in carregar_skills() if s.name not in ja_na_mensagem]
+    plugins = [AgentSkills(skills=skills, strict=True)] if skills else []
+    portao = portao if portao is not None else PortaoDeFerramentas()
+    limpa_dados = limpa_dados if limpa_dados is not None else LimpaDados()
+    # As instruções locais são confiáveis e não são consultas aos dados. Autoriza
+    # os objetos exatos do plugin, sem liberar qualquer ferramenta chamada skills.
+    internas = [ferramenta for plugin in plugins for ferramenta in plugin.tools]
+    portao.registrar_ferramentas_internas(internas)
+    limpa_dados.registrar_ferramentas_internas(internas)
     return Agent(
         model=criar_modelo(config),
         tools=FERRAMENTAS_ATIVAS,
-        plugins=[AgentSkills(skills=skills, strict=True)] if skills else [],
+        plugins=plugins,
+        interventions=[portao, limpa_dados],
         hooks=[progresso] if progresso is not None else [],
         system_prompt=PROMPT_DE_SISTEMA.format(idioma=IDIOMAS[idioma]),
         callback_handler=None,  # sem imprimir a resposta no terminal do servidor
@@ -183,15 +196,22 @@ async def responder(
     """
     progresso = progresso if progresso is not None else ProgressoERegistro()
     progresso.iniciar()
+    portao = PortaoDeFerramentas()
+    limpa_dados = LimpaDados()
     tipo = "erro"
     try:
         async with asyncio.timeout(TEMPO_LIMITE_S):
             if pedido.hotspot_id is not None:
+                # Compartilha a cota com as chamadas que o modelo fará depois.
+                decisao = portao.autorizar("consultar_hotspot")
+                if isinstance(decisao, Deny):
+                    raise AgenteSemResposta(decisao.reason)
                 # Esta consulta já existia fora do Agent; os callbacks do Strands
                 # não a veem. Observa-se o mesmo await, sem mudar seu resultado.
                 progresso.iniciar_ferramenta("hotspot-aberto", "consultar_hotspot")
                 try:
-                    hotspot = await _buscar_hotspot(pedido.hotspot_id)
+                    dados = await _buscar_hotspot(pedido.hotspot_id)
+                    hotspot = limpa_dados.limpar_dados(dados) if dados is not None else None
                 finally:
                     progresso.concluir_ferramenta("hotspot-aberto")
             else:
@@ -203,6 +223,8 @@ async def responder(
                 pedido.language,
                 skills_injetadas=[s.name for s in injetadas],
                 progresso=progresso,
+                portao=portao,
+                limpa_dados=limpa_dados,
             )
             resultado = await agente.invoke_async(
                 _mensagem(pedido.question, hotspot, injetadas),
@@ -215,8 +237,9 @@ async def responder(
             raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
 
         buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
-        resultados = [*buscado, *_resultados_das_ferramentas(agente.messages)]
-        usadas = list(dict.fromkeys([n for n, _ in buscado] + _ferramentas_chamadas(agente.messages)))
+        resultados = [*buscado, *_resultados_das_ferramentas(agente.messages, portao.negadas)]
+        chamadas = _ferramentas_chamadas(agente.messages, portao.negadas)
+        usadas = list(dict.fromkeys([n for n, _ in buscado] + chamadas))
         # O que vem das ferramentas o código sabe; não fica a critério do modelo.
         resposta = RespostaCass(
             **do_modelo.model_dump(exclude={"hipotese"}),
@@ -267,18 +290,22 @@ def _mensagem(
     return "\n\n".join([*blocos, f"Pergunta: {pergunta}"])
 
 
-def _ferramentas_chamadas(mensagens: list[dict[str, Any]]) -> list[str]:
+def _ferramentas_chamadas(
+    mensagens: list[dict[str, Any]], negadas: Collection[str] = ()
+) -> list[str]:
     """Ferramentas do Cass que o modelo chamou, em ordem e sem repetir."""
     nomes = (
         bloco["toolUse"]["name"]
         for mensagem in mensagens
         for bloco in mensagem.get("content", [])
-        if "toolUse" in bloco
+        if "toolUse" in bloco and bloco["toolUse"]["toolUseId"] not in negadas
     )
     return list(dict.fromkeys(n for n in nomes if n in NOMES_DAS_FERRAMENTAS))
 
 
-def _resultados_das_ferramentas(mensagens: list[dict[str, Any]]) -> list[Resultado]:
+def _resultados_das_ferramentas(
+    mensagens: list[dict[str, Any]], negadas: Collection[str] = ()
+) -> list[Resultado]:
     """Os dicts que as ferramentas do Cass devolveram nesta pergunta, em ordem.
 
     A ferramenta de saída estruturada não é do Cass e fica de fora.
@@ -290,6 +317,8 @@ def _resultados_das_ferramentas(mensagens: list[dict[str, Any]]) -> list[Resulta
             if "toolUse" in bloco:
                 nomes[bloco["toolUse"]["toolUseId"]] = bloco["toolUse"]["name"]
             elif "toolResult" in bloco:
+                if bloco["toolResult"]["toolUseId"] in negadas:
+                    continue
                 nome = nomes.get(bloco["toolResult"]["toolUseId"])
                 if nome not in NOMES_DAS_FERRAMENTAS:
                     continue

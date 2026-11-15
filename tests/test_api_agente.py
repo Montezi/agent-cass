@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable, Iterator
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,10 +13,13 @@ import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
+from strands.hooks import BeforeToolCallEvent
+from strands.interventions import Deny, Proceed
 
 from cass import agente, ferramentas, main
 from cass.config import Configuracao
 from cass.hooks import ProgressoERegistro
+from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import RespostaAgente, RespostaCass, RespostaDoModelo
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
@@ -93,6 +97,8 @@ def simular(
             idioma: str = "pt",
             skills_injetadas: Any = (),
             progresso: ProgressoERegistro | None = None,
+            portao: PortaoDeFerramentas | None = None,
+            limpa_dados: LimpaDados | None = None,
         ) -> AgenteSimulado:
             criados.append(
                 {
@@ -100,6 +106,8 @@ def simular(
                     "idioma": idioma,
                     "skills_injetadas": list(skills_injetadas),
                     "progresso": progresso,
+                    "portao": portao,
+                    "limpa_dados": limpa_dados,
                 }
             )
             return simulado
@@ -211,6 +219,78 @@ def test_dados_do_hotspot_vao_na_mensagem(
     assert dados_na_mensagem["hotspot"]["id"] == "guaiba-rs"
     assert dados_na_mensagem["hotspot"]["affected_area_km2"] is None
     assert dados_na_mensagem["dados_de_exemplo"] is True
+
+
+def test_hotspot_antecipado_e_limpo_antes_de_entrar_na_mensagem(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = {
+        "hotspot": {
+            "id": "guaiba-rs", "name": {"pt": "á" * 250, "en": "b" * 250},
+            "affected_area_km2": 212, "last_pass": "2026-11-12",
+        },
+        "fonte": {"nome": "NISAR", "data": "2026-11-12", "url": "https://dados.teste/" + "a" * 250},
+        "dados_de_exemplo": True,
+    }
+    antes = deepcopy(original)
+
+    async def buscar(hotspot_id: str) -> dict:
+        return original
+
+    monkeypatch.setattr(agente, "_buscar_hotspot", buscar)
+    simulado = simular()
+
+    resposta = perguntar(cliente, question="O que mudou?")
+
+    dados = json.loads(simulado.chamadas[0]["prompt"].split("\n")[1])
+    assert dados["_tipo"] == "dado"
+    assert dados["hotspot"]["name"] == {"pt": "á" * 200, "en": "b" * 200}
+    assert dados["hotspot"]["affected_area_km2"] == 212
+    assert dados["fonte"] == original["fonte"]
+    assert original == antes
+    assert resposta.sources == ["NISAR, 12 nov 2026"]
+    assert resposta.note is not None
+
+
+def test_hotspot_antecipado_compartilha_a_cota_das_seis_consultas(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+) -> None:
+    simular()
+    perguntar(cliente)
+    portao = criados[0]["portao"]
+    assert portao.chamadas == 1
+
+    for numero in range(2, 8):
+        evento = BeforeToolCallEvent(
+            agent=SimpleNamespace(), selected_tool=None,
+            tool_use={"toolUseId": f"consulta-{numero}", "name": "consultar_hotspot", "input": {}},
+            invocation_state={},
+        )
+        decisao = portao.before_tool_call(evento)
+        assert isinstance(decisao, Proceed if numero <= 6 else Deny)
+
+
+@pytest.mark.parametrize("hotspot_id", [None, "guaiba-rs", "desconhecido"])
+def test_cada_pergunta_ganha_guardrails_novos(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+    hotspot_id: str | None,
+) -> None:
+    simular()
+
+    perguntar(cliente, hotspot_id=hotspot_id)
+    perguntar(cliente, hotspot_id=hotspot_id)
+
+    assert criados[0]["portao"] is not criados[1]["portao"]
+    assert criados[0]["limpa_dados"] is not criados[1]["limpa_dados"]
+    assert all(c["portao"].chamadas == int(hotspot_id is not None) for c in criados)
 
 
 def test_hotspot_buscado_conta_como_ferramenta_usada(
