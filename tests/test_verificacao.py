@@ -410,3 +410,28 @@ def test_baseline_pass_e_threshold_db_confirmam_a_comparacao(idioma: str, texto:
 
     assert numeros_confirmados(resposta(texto, idioma), dados({"hotspot": hotspot}))
     assert not numeros_confirmados(resposta("Entre 15 jan 2026 e 12 nov 2026.", "pt"), dados({"hotspot": hotspot}))
+
+
+# ---------- PT: 0.86 com ponto ----------
+
+
+@pytest.mark.parametrize(
+    ("texto", "dado"),
+    [
+        ("Confiança de 0.86.", {"confidence": 0.86}),
+        ("Confiança de **0.86**.", {"confidence": 0.86}),
+        ("Confiança de 0.860.", {"confidence": 0.86}),
+        ("Variação de -0.5 dB.", {"delta_hh_db": -0.5}),
+        ("Variação de −0.5 dB.", {"delta_hh_db": -0.5}),
+    ],
+)
+def test_pt_aceita_ponto_decimal_quando_comeca_com_zero(texto: str, dado: dict) -> None:
+    assert numeros_confirmados(resposta(texto, "pt"), dados(dado))
+    assert numeros_confirmados(resposta(texto.replace(".", ",", 1), "pt"), dados(dado))
+
+
+def test_pt_com_ponto_fora_do_zero_continua_sendo_milhar() -> None:
+    assert numeros_confirmados(resposta("Área de 2.500 km²."), dados({"affected_area_km2": 2500}))
+    assert not numeros_confirmados(resposta("Área de 1.5 km²."), dados({"affected_area_km2": 1.5}))
+    assert not numeros_confirmados(resposta("Área de 0.860 km²."), dados({"affected_area_km2": 860}))
+    assert not numeros_confirmados(resposta("Confiança de 0.86."), dados({"confidence": 0.87}))

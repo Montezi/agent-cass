@@ -122,6 +122,9 @@ def _numero_localizado(texto: str, idioma: Idioma) -> Decimal | None:
     mantissa = partes[0]
     expoente = f"e{partes[1]}" if len(partes) == 2 else ""
     decimal, milhar = (",", ".") if idioma == "pt" else (".", ",")
+    if idioma == "pt" and re.fullmatch(r"[-+]?0\.[0-9]+", mantissa):
+        # "0.86": em PT, nenhum milhar começa com 0, então o ponto só pode ser decimal.
+        decimal, milhar = ".", ","
     if mantissa.count(decimal) > 1:
         return None
     inteiro, separador, fracao = mantissa.partition(decimal)
