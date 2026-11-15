@@ -178,7 +178,6 @@ def test_pedir_alerta_leva_a_skill_alerta_whatsapp(
         if valor:
             monkeypatch.setenv(nome, valor)
     monkeypatch.setenv("DADOS_BASE", dados_servidos)
-    monkeypatch.setenv("CLIMA_URL", f"{dados_servidos}/api/clima")
     # 404 em todas as fontes da previsão: indisponível, sem rede externa.
     monkeypatch.setattr(ferramentas, "URL_METEOMATICS", f"{dados_servidos}/meteomatics")
     monkeypatch.setattr(ferramentas, "URL_OPEN_METEO", f"{dados_servidos}/open-meteo")

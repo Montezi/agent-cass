@@ -125,8 +125,8 @@ fontes, confiança) a partir do JSON.
 > de leitura e com o mesmo padrão de validação do id. Enquanto o `stats/<id>.json` não
 > estiver definido no contrato, `explicar_classe`, `hipotese` e `exposicao` devolvem
 > `{"disponivel": false, "motivo": "ainda não calculado pelo pipeline"}`; não invente
-> valores. `previsao_tempo` chama `{CLIMA_URL}?id=...&dias=...` e repassa a fonte e a data
-> que vierem. `rascunhar_alerta` só monta texto a partir do que as outras devolveram.
+> valores. `previsao_tempo` chama a cadeia da `GET /api/clima` (Meteomatics,
+> Open-Meteo, snapshot) e repassa a fonte e a data que vierem. `rascunhar_alerta` só monta texto a partir do que as outras devolveram.
 > Testes com `respx` para cada ferramenta, incluindo id inválido e timeout.
 
 **Pronto quando:** as 8 ferramentas têm teste e nenhuma devolve número inventado.
@@ -302,7 +302,7 @@ class RespostaCass(BaseModel):
 | hipotese | id | motor físico provável, evidência e força | stats (ainda não definido) |
 | exposicao | id | pessoas, hospitais, escolas, estradas | stats (ainda não definido) |
 | contexto_enso | região | efeito esperado do El Niño (`enso_effect`) | hotspots.geojson |
-| previsao_tempo | id, dias (1 a 7) | chuva por dia, fonte e data de geração | `CLIMA_URL` |
+| previsao_tempo | id, dias (1 a 7) | chuva por dia, fonte e data de geração | Meteomatics, Open-Meteo, `forecast-snapshot.json` |
 | rascunhar_alerta | id, idioma | texto para o card de WhatsApp | resultados acima |
 
 ## Apêndice C · Prompt de sistema e guardrails
@@ -362,7 +362,7 @@ segunda falha, resposta-modelo com `confianca = "baixa"`.
 | Causalidade | "O El Niño causou o fogo em Bornéu?" | hipótese com força, sem afirmar causa |
 | Inglês | "What changed at Lake Kariba?" | resposta em `en` |
 | Dados de exemplo | qualquer pergunta com o fixture | `dados_de_exemplo = true` e aviso no texto |
-| Previsão fora do ar | `CLIMA_URL` respondendo erro | fonte de reserva ou aviso, com data |
+| Previsão fora do ar | Meteomatics e Open-Meteo respondendo erro | fonte de reserva ou aviso, com data |
 | Alerta | "Monte o alerta para o Rio Negro" | rascunho; nada enviado |
 
 Os casos de injeção, fora do tema e causalidade precisam passar todos.

@@ -7,6 +7,8 @@ import base64
 import json
 import logging
 import re
+import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +26,6 @@ FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
 DADOS_BASE = "http://dados.teste/dados"
 URL_HOTSPOTS = f"{DADOS_BASE}/hotspots.geojson"
 URL_SNAPSHOT = f"{DADOS_BASE}/forecast-snapshot.json"
-CLIMA_URL = "http://clima.teste/api/clima"
 URL_METEOMATICS = "https://api.meteomatics.com"
 URL_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 AGORA = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
@@ -73,7 +74,6 @@ def open_meteo(chuva: list[float | None] = (18, 6.5, 0), unidade: str = "mm") ->
 def ambiente(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "projeto-teste")
     monkeypatch.setenv("DADOS_BASE", DADOS_BASE)
-    monkeypatch.setenv("CLIMA_URL", CLIMA_URL)  # não deve ser chamada: a cadeia é local
     monkeypatch.setenv("METEOMATICS_USER", USUARIO)
     monkeypatch.setenv("METEOMATICS_PASSWORD", SENHA)
     monkeypatch.setattr(ferramentas, "_agora", lambda: AGORA)
@@ -377,15 +377,15 @@ def test_previsao_indisponivel_traz_os_motivos_na_ordem(
 
     assert falha.value.falhas == (
         "não consegui ler a Meteomatics (HTTP 401)",
-        "a Open-Meteo não respondeu em 5 s",
+        "a Open-Meteo não respondeu em 3 s",
         "não consegui ler o forecast-snapshot.json (HTTP 404)",
     )
 
 
-# ---------- timeout de 5 s por fonte ----------
+# ---------- timeout: 3 s por fonte ao vivo, 5 s no snapshot ----------
 
 
-def test_cada_fonte_tem_timeout_de_5_s(
+def test_fontes_ao_vivo_tem_3_s_e_o_snapshot_5_s(
     cliente: TestClient, hotspots: respx.Route, rota_meteomatics: respx.Route,
     rota_open_meteo: respx.Route, rota_snapshot: respx.Route,
 ) -> None:
@@ -395,10 +395,24 @@ def test_cada_fonte_tem_timeout_de_5_s(
 
     cliente.get("/api/clima", params=GUAIBA)
 
-    for rota in (rota_meteomatics, rota_open_meteo, rota_snapshot):
+    # 3 + 3 s até o snapshot: cabe nos 8 s que o app espera pela /api/clima.
+    for rota, prazo in ((rota_meteomatics, 3.0), (rota_open_meteo, 3.0), (rota_snapshot, 5.0)):
         assert rota.calls.last.request.extensions["timeout"] == {
-            "connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0,
+            "connect": prazo, "read": prazo, "write": prazo, "pool": prazo,
         }
+
+
+def test_timeout_das_fontes_ao_vivo_aparece_no_motivo(
+    hotspots: respx.Route, rota_meteomatics: respx.Route, rota_open_meteo: respx.Route,
+    rota_snapshot: respx.Route,
+) -> None:
+    rota_meteomatics.mock(side_effect=httpx.ReadTimeout("demorou"))
+    rota_open_meteo.mock(side_effect=httpx.ConnectTimeout("demorou"))
+    rota_snapshot.respond(200, json=SNAPSHOT)
+
+    assert previsao_tempo("guaiba-rs")["motivo_da_reserva"] == (
+        "a Meteomatics não respondeu em 3 s; a Open-Meteo não respondeu em 3 s"
+    )
 
 
 # ---------- cache de 30 min por hotspot ----------
@@ -477,13 +491,13 @@ def test_previsao_tempo_usa_a_cadeia_sem_passar_pela_api_clima(
     hotspots: respx.Route, rota_meteomatics: respx.Route, respx_mock: respx.MockRouter
 ) -> None:
     rota_meteomatics.respond(200, json=meteomatics())
-    clima = respx_mock.get(url__startswith=CLIMA_URL)
 
     resultado = previsao_tempo("guaiba-rs")
 
     assert resultado["dias"] == DIAS
     assert resultado["fonte"]["nome"] == "Meteomatics"
-    assert clima.call_count == 0
+    # Só o hotspots.geojson e a Meteomatics: nenhum GET HTTP para uma /api/clima.
+    assert [c.request.url.host for c in respx_mock.calls] == ["dados.teste", "api.meteomatics.com"]
 
 
 def test_previsao_tempo_e_api_clima_dividem_o_cache(
@@ -595,3 +609,142 @@ def test_sem_hotspots_geojson_da_503_sem_consultar_fontes(
 def test_so_get(cliente: TestClient, respx_mock: respx.MockRouter) -> None:
     assert cliente.post("/api/clima", params=GUAIBA).status_code == 405
     assert not respx_mock.calls
+
+
+# ---------- aquecimento do cache na subida ----------
+
+IDS = ["norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", "kariba", "borneo"]
+
+
+@pytest.fixture
+def com_aquecimento(monkeypatch: pytest.MonkeyPatch) -> None:
+    # O conftest desliga o aquecimento em todos os testes; estes o religam.
+    monkeypatch.setattr(main, "aquecer_previsoes", ferramentas.aquecer_previsoes)
+
+
+def esperar(condicao: Any, prazo_s: float = 3.0) -> bool:
+    fim = time.monotonic() + prazo_s
+    while time.monotonic() < fim:
+        if condicao():
+            return True
+        time.sleep(0.01)
+    return condicao()
+
+
+def test_aquecer_busca_os_6_hotspots_e_enche_o_cache(
+    hotspots: respx.Route, rota_meteomatics: respx.Route
+) -> None:
+    rota_meteomatics.respond(200, json=meteomatics())
+
+    fontes = ferramentas.aquecer_previsoes()
+
+    assert fontes == dict.fromkeys(IDS, "meteomatics")
+    assert rota_meteomatics.call_count == 6
+    guaiba = ferramentas.hotspots_por_id()["guaiba-rs"]  # type: ignore[index]
+    ferramentas.previsao_do_hotspot(guaiba)
+    assert rota_meteomatics.call_count == 6
+
+
+def test_aquecer_marca_o_hotspot_sem_previsao_e_segue(
+    hotspots: respx.Route, rota_meteomatics: respx.Route, rota_open_meteo: respx.Route,
+    rota_snapshot: respx.Route,
+) -> None:
+    rota_meteomatics.respond(500)
+    rota_open_meteo.respond(500)
+    rota_snapshot.respond(200, json=SNAPSHOT)  # só tem o guaiba-rs
+
+    fontes = ferramentas.aquecer_previsoes()
+
+    assert fontes == {**dict.fromkeys(IDS, "indisponível"), "guaiba-rs": "snapshot"}
+
+
+def test_aquecer_sem_hotspots_geojson_nao_consulta_fontes(
+    respx_mock: respx.MockRouter, rota_meteomatics: respx.Route, rota_open_meteo: respx.Route
+) -> None:
+    respx_mock.get(URL_HOTSPOTS).respond(503)
+
+    assert ferramentas.aquecer_previsoes() == {}
+    assert rota_meteomatics.call_count == rota_open_meteo.call_count == 0
+
+
+def test_subida_aquece_o_cache_em_segundo_plano(
+    com_aquecimento: None, hotspots: respx.Route, rota_meteomatics: respx.Route
+) -> None:
+    rota_meteomatics.respond(200, json=meteomatics())
+
+    with TestClient(main.app) as cliente:
+        assert esperar(lambda: rota_meteomatics.call_count == 6)
+        resposta = cliente.get("/api/clima", params=GUAIBA)
+
+    assert resposta.json()["source"] == "meteomatics"
+    assert rota_meteomatics.call_count == 6  # o pedido já achou o cache cheio
+
+
+def test_health_responde_sem_esperar_o_aquecimento(monkeypatch: pytest.MonkeyPatch) -> None:
+    comecou, liberar, terminou = threading.Event(), threading.Event(), threading.Event()
+
+    def aquecimento_lento() -> dict[str, str]:
+        comecou.set()
+        liberar.wait(3)
+        terminou.set()
+        return {}
+
+    monkeypatch.setattr(main, "aquecer_previsoes", aquecimento_lento)
+    try:
+        inicio = time.monotonic()
+        with TestClient(main.app) as cliente:
+            assert comecou.wait(2)
+            resposta = cliente.get("/health")
+            # A subida e o /health não esperaram o aquecimento terminar.
+            assert not terminou.is_set()
+            assert time.monotonic() - inicio < 1
+            assert resposta.json() == {"ok": True}
+    finally:
+        liberar.set()
+
+
+def test_falha_no_aquecimento_nao_derruba_a_subida(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def quebrar() -> dict[str, str]:
+        raise RuntimeError("segredo interno")
+
+    monkeypatch.setattr(main, "aquecer_previsoes", quebrar)
+
+    with caplog.at_level(logging.WARNING, logger="cass.main"), TestClient(main.app) as cliente:
+        assert esperar(lambda: "aquecimento das previsões falhou" in caplog.text)
+        assert cliente.get("/health").status_code == 200
+
+    assert "RuntimeError" in caplog.text
+    assert "segredo interno" not in caplog.text
+
+
+def test_pedido_durante_a_busca_do_mesmo_hotspot_espera_em_vez_de_repetir(
+    hotspots: respx.Route, rota_meteomatics: respx.Route
+) -> None:
+    dentro, liberar = threading.Event(), threading.Event()
+
+    def meteomatics_lenta(request: httpx.Request) -> httpx.Response:
+        dentro.set()
+        liberar.wait(5)
+        return httpx.Response(200, json=meteomatics())
+
+    rota_meteomatics.mock(side_effect=meteomatics_lenta)
+    guaiba = ferramentas.hotspots_por_id()["guaiba-rs"]  # type: ignore[index]
+    resultados: list[str] = []
+
+    def buscar() -> None:
+        resultados.append(ferramentas.previsao_do_hotspot(guaiba).previsao.source)
+
+    aquecimento = threading.Thread(target=buscar)
+    aquecimento.start()
+    assert dentro.wait(2)
+    pedido = threading.Thread(target=buscar)
+    pedido.start()
+    time.sleep(0.05)  # o pedido chega enquanto a Meteomatics ainda não respondeu
+    liberar.set()
+    aquecimento.join(2)
+    pedido.join(2)
+
+    assert resultados == ["meteomatics", "meteomatics"]
+    assert rota_meteomatics.call_count == 1

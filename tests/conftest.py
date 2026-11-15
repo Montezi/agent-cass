@@ -8,6 +8,15 @@ from cass import main
 IDS_DO_FIXTURE = ["norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", "kariba", "borneo"]
 
 
+@pytest.fixture(autouse=True)
+def sem_aquecimento(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cada TestClient sobe o serviço; sem isto, a subida buscaria a previsão dos
+    hotspots em segundo plano e gastaria as rotas do respx de cada teste.
+    Os testes do aquecimento (tests/test_clima.py) religam a função de verdade.
+    """
+    monkeypatch.setattr(main, "aquecer_previsoes", dict)
+
+
 @pytest.fixture
 def ids_conhecidos(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """O endpoint confere o hotspot_id contra estes ids, sem ler o hotspots.geojson.

@@ -29,7 +29,6 @@ GEMINI_MODEL="gemini-3.8-flash"
 # URLs públicas; localhost no Cloud Run não aponta para sua máquina.
 APP_ORIGIN="https://seu-site.web.app"
 DADOS_BASE="${APP_ORIGIN}/dados"
-CLIMA_URL="${APP_ORIGIN}/api/clima"
 
 gcloud auth login
 gcloud config set project "$PROJECT_ID"
@@ -51,6 +50,7 @@ gcloud services enable \
   artifactregistry.googleapis.com \
   aiplatform.googleapis.com \
   iam.googleapis.com \
+  secretmanager.googleapis.com \
   --project "$PROJECT_ID"
 ```
 
@@ -91,6 +91,37 @@ correspondentes. Tornar o serviço público com
 [Conta de build](https://docs.cloud.google.com/run/docs/configuring/services/build-service-account),
 [acesso público](https://docs.cloud.google.com/run/docs/authenticating/public).
 
+### Credenciais da Meteomatics (opcional)
+
+A `GET /api/clima` e o `previsao_tempo` usam a Meteomatics só quando
+`METEOMATICS_USER` e `METEOMATICS_PASSWORD` existem; sem elas, a previsão começa
+na Open-Meteo, que não tem chave. As duas vêm do Secret Manager, nunca de
+`--set-env-vars`, do Dockerfile ou do histórico do shell. Crie os segredos uma vez;
+o `read -rs` não mostra o valor nem o grava no histórico:
+
+```bash
+read -rs -p "Usuário da Meteomatics: " VALOR && echo
+printf %s "$VALOR" | gcloud secrets create meteomatics-user --data-file=- --project "$PROJECT_ID"
+read -rs -p "Senha da Meteomatics: " VALOR && echo
+printf %s "$VALOR" | gcloud secrets create meteomatics-password --data-file=- --project "$PROJECT_ID"
+unset VALOR
+
+for SEGREDO in meteomatics-user meteomatics-password; do
+  gcloud secrets add-iam-policy-binding "$SEGREDO" \
+    --member="serviceAccount:${CONTA}" \
+    --role="roles/secretmanager.secretAccessor" \
+    --project "$PROJECT_ID"
+done
+```
+
+A conta de execução recebe `roles/secretmanager.secretAccessor` só nesses dois
+segredos, não no projeto. O deploy (seção 5) liga os segredos às variáveis com
+`--update-secrets`. O Cloud Run lê o valor na subida da instância: para trocar a
+senha, crie uma versão nova (`gcloud secrets versions add meteomatics-password
+--data-file=-`) e faça um deploy novo. Sem conta na Meteomatics, pule esta parte e
+tire a linha `--update-secrets` dos comandos de deploy.
+[Segredos no Cloud Run](https://docs.cloud.google.com/run/docs/configuring/services/secrets).
+
 ## 4. Guardar a revisão atual antes de atualizar
 
 Se o serviço já existir, identifique a revisão estável que recebe tráfego e
@@ -120,7 +151,8 @@ gcloud run deploy "$SERVICO" \
   --max-instances=2 \
   --timeout=60 \
   --allow-unauthenticated \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GEMINI_MODEL=${GEMINI_MODEL},APP_ORIGIN=${APP_ORIGIN},DADOS_BASE=${DADOS_BASE},CLIMA_URL=${CLIMA_URL},DECIDER_ATIVO=false,DECIDER_URL=http://127.0.0.1:8099/v1/systemone"
+  --update-secrets=METEOMATICS_USER=meteomatics-user:latest,METEOMATICS_PASSWORD=meteomatics-password:latest \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GEMINI_MODEL=${GEMINI_MODEL},APP_ORIGIN=${APP_ORIGIN},DADOS_BASE=${DADOS_BASE},DECIDER_ATIVO=false,DECIDER_URL=http://127.0.0.1:8099/v1/systemone"
 ```
 
 Esta é a variante leve, sem o Decider: um só processo, que espera o Gemini a
@@ -162,6 +194,9 @@ URL="$(gcloud run services describe "$SERVICO" --region "$REGIAO" --format='valu
 curl -fsS "$URL/health"
 # {"ok":true}
 
+curl -fsS "$URL/api/clima?hotspot=guaiba-rs&lat=-30.0&lon=-51.2"
+# source, updated_at e days; "source":"meteomatics" confirma que os segredos chegaram
+
 curl -fsS -X POST "$URL/api/agente" \
   -H 'Content-Type: application/json' \
   --data '{"question":"O que mudou no Guaíba?","hotspot_id":"guaiba-rs","language":"pt"}'
@@ -175,9 +210,12 @@ curl -N -fsS -X POST "$URL/api/agente/stream" \
 ```
 
 Configure os rewrites do Firebase Hosting para os caminhos do agente; o frontend
-continua usando caminhos relativos. O stream é adicional e sua adoção está em
+continua usando caminhos relativos. O `firebase.json` do frontend manda
+`/api/clima` para um serviço `clima`: para o app usar a `/api/clima` deste
+serviço, aponte esse rewrite para `agente` (ou publique esta mesma imagem também
+como `clima`). O stream é adicional e sua adoção está em
 [`propostas-api-contract.md`](propostas-api-contract.md). As ferramentas precisam
-alcançar `DADOS_BASE` e `CLIMA_URL`; previsão indisponível deve aparecer como
+alcançar `DADOS_BASE`, `api.meteomatics.com` e `api.open-meteo.com`; previsão indisponível deve aparecer como
 limitação na resposta.
 
 CORS permite somente `APP_ORIGIN`. JSON e SSE compartilham o limite local de
@@ -357,7 +395,8 @@ gcloud run deploy "$SERVICO" \
   --memory=8Gi --cpu=4 --no-cpu-throttling --cpu-boost \
   --concurrency=1 --max-instances=2 --timeout=60 \
   --allow-unauthenticated \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GEMINI_MODEL=${GEMINI_MODEL},APP_ORIGIN=${APP_ORIGIN},DADOS_BASE=${DADOS_BASE},CLIMA_URL=${CLIMA_URL},DECIDER_ATIVO=false,DECIDER_URL=http://127.0.0.1:8099/v1/systemone"
+  --update-secrets=METEOMATICS_USER=meteomatics-user:latest,METEOMATICS_PASSWORD=meteomatics-password:latest \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GEMINI_MODEL=${GEMINI_MODEL},APP_ORIGIN=${APP_ORIGIN},DADOS_BASE=${DADOS_BASE},DECIDER_ATIVO=false,DECIDER_URL=http://127.0.0.1:8099/v1/systemone"
 ```
 
 **Critério de ativação:** a bateria com Decider deve ficar igual ou melhor que

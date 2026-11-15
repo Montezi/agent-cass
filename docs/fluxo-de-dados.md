@@ -52,7 +52,7 @@ e `precipitation_mm`.
   válidos em `ctx.validos`). `lat` e `lon` precisam ser as do hotspot (senão 422):
   as fontes só são consultadas nas coordenadas do `hotspots.geojson`, para a rota
   não virar um proxy da conta da Meteomatics. Sem o `hotspots.geojson`, 503.
-- **Cadeia**, com prazo de 5 s por fonte:
+- **Cadeia**, com prazo de 3 s por fonte ao vivo e 5 s para o snapshot:
   1. **Meteomatics**, só se `METEOMATICS_USER` e `METEOMATICS_PASSWORD` existirem.
      `precip_24h:mm` às 00:00Z de D+1 é a chuva do dia D (UTC); `updated_at` é o
      `dateGenerated` da resposta.
@@ -66,8 +66,11 @@ e `precipitation_mm`.
   (chuva negativa ou nula no primeiro dia, outra unidade) passa a vez para a
   próxima. Se as três falharem, 503: o app lê o snapshot por conta própria.
 - **Cache** de 30 min por hotspot, qualquer que seja a fonte que serviu. Uma falha
-  total não fica em cache. Com as fontes ao vivo fora do ar, o primeiro pedido
-  pode levar 10 s até o snapshot, mais que os 8 s do app.
+  total não fica em cache. Com as duas fontes ao vivo sem responder, chegar ao
+  snapshot leva cerca de 6 s, dentro dos 8 s do app.
+- **Aquecimento:** na subida, o serviço busca a previsão dos hotspots em paralelo,
+  em segundo plano; o `/health` não espera. Um pedido que chega enquanto o mesmo
+  hotspot está sendo buscado espera esse resultado em vez de consultar de novo.
 
 As ferramentas `explicar_classe`, `hipotese` e `exposicao` ainda devolvem
 `SEM_STATS`: o backend não lê `stats/<id>.json`. Esse é um trabalho de integração
@@ -85,7 +88,7 @@ ingestão científica não foi encontrada nesse repositório.
 No Cass, quando a previsão vem do snapshot, `previsao_tempo` devolve a fonte
 "Snapshot" com a data do arquivo, `reserva: true`, `motivo_da_reserva` (as falhas
 da Meteomatics e da Open-Meteo) e `dados_de_exemplo`. Se as três fontes falharem,
-devolve um erro com os três motivos. A `CLIMA_URL` não é mais lida.
+devolve um erro com os três motivos.
 
 Há diferenças entre as cópias dos contratos: o frontend documenta dados v2
 (`baseline_pass`, `threshold_db`, `metadata.schema_version`, `generated_at`) e

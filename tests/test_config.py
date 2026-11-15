@@ -26,7 +26,6 @@ def test_padroes_seguros_com_so_o_projeto() -> None:
         gemini_model="gemini-3.8-flash",
         app_origin="http://localhost:5173",
         dados_base="http://localhost:5173/dados",
-        clima_url="http://localhost:5173/api/clima",
         decider_ativo=False,
         decider_url="http://127.0.0.1:8099/v1/systemone",
     )

@@ -65,7 +65,6 @@ def perguntar_na_bateria(
             monkeypatch.setenv(nome, valor)
     monkeypatch.setenv("DECIDER_ATIVO", modo_decider)
     monkeypatch.setenv("DADOS_BASE", f"{dados_da_bateria}/dados")
-    monkeypatch.setenv("CLIMA_URL", f"{dados_da_bateria}/api/clima")
     # As fontes da previsão também apontam para o servidor local (503): sem rede externa.
     monkeypatch.setattr(ferramentas, "URL_METEOMATICS", f"{dados_da_bateria}/meteomatics")
     monkeypatch.setattr(ferramentas, "URL_OPEN_METEO", f"{dados_da_bateria}/open-meteo")

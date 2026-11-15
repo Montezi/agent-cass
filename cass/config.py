@@ -13,7 +13,6 @@ PADROES: dict[str, str] = {
     "GEMINI_MODEL": "gemini-3.8-flash",
     "APP_ORIGIN": "http://localhost:5173",
     "DADOS_BASE": "http://localhost:5173/dados",
-    "CLIMA_URL": "http://localhost:5173/api/clima",
     "DECIDER_URL": "http://127.0.0.1:8099/v1/systemone",
 }
 
@@ -32,7 +31,6 @@ class Configuracao:
     gemini_model: str
     app_origin: str
     dados_base: str
-    clima_url: str
     decider_ativo: bool
     decider_url: str
     # Opcionais: sem os dois, a previsão começa na Open-Meteo. Fora do repr, para a
@@ -67,7 +65,6 @@ def carregar_config(env: Mapping[str, str] | None = None) -> Configuracao:
         gemini_model=_ler(env, "GEMINI_MODEL"),
         app_origin=_ler(env, "APP_ORIGIN"),
         dados_base=_ler(env, "DADOS_BASE"),
-        clima_url=_ler(env, "CLIMA_URL"),
         decider_ativo=_ler(env, "DECIDER_ATIVO").lower() in VERDADEIROS,
         decider_url=_ler(env, "DECIDER_URL"),
         meteomatics_user=_ler(env, "METEOMATICS_USER"),

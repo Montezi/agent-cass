@@ -21,9 +21,11 @@ Trabalhe um passo por vez e não adiante passos que não foram pedidos.
    confirme o import e a assinatura no MCP `strands-agents` (`search_docs`, `fetch_doc`).
    Se a documentação não confirmar, diga isso em vez de inventar.
 4. **Ferramentas do Cass são só de leitura.** Montam a URL a partir de `DADOS_BASE`
-   (ou `CLIMA_URL`) e de um `id` validado contra a lista de `hotspots.geojson`.
+   e de um `id` validado contra a lista de `hotspots.geojson`. A previsão também lê
+   `api.meteomatics.com` e `api.open-meteo.com`, só com as coordenadas de um hotspot
+   do `hotspots.geojson` (nunca um ponto vindo do pedido ou do modelo).
    Proibido dar ao Cass: `file_read`, `shell`, busca na web, escrita em disco ou rede
-   fora dessas URLs.
+   fora desses destinos.
 5. **Contrato de dados:** `hotspots.geojson` segue `docs/data-contract.md` (chaves em
    inglês: `dominant_class`, `flood`, `affected_area_km2`...). O espelho Pydantic fica em
    `cass/modelos.py`. Valores medidos podem ser `null`: nunca invente número.

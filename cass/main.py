@@ -19,7 +19,7 @@ from cass.agente import TEMPO_LIMITE_S, AgenteDemorou, responder
 from cass.config import Configuracao, carregar_config
 from cass.contrato import para_contrato, resposta_de_erro
 from cass.ferramentas import PrevisaoIndisponivel, hotspots_por_id, ids_dos_hotspots
-from cass.ferramentas import previsao_do_hotspot
+from cass.ferramentas import aquecer_previsoes, previsao_do_hotspot
 from cass.guardrails import avaliar_entrada
 from cass.hooks import EventoProgresso, ProgressoERegistro
 from cass.limites import CORSConfigurado, LimitadorPorIP, LimiteDeCorpo, verificar_limite_ip
@@ -35,7 +35,22 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = carregar_config()
     app.state.limite_ip = LimitadorPorIP()
     app.state.limite_ip_config = app.state.config
+    # Em segundo plano: o /health responde enquanto as previsões dos hotspots chegam.
+    aquecimento = asyncio.create_task(_aquecer_previsoes())
     yield
+    aquecimento.cancel()
+    with suppress(asyncio.CancelledError):
+        await aquecimento
+
+
+async def _aquecer_previsoes() -> None:
+    """Enche o cache da previsão de cada hotspot; uma falha só vai para o log."""
+    try:
+        fontes = await asyncio.to_thread(aquecer_previsoes)
+    except Exception as erro:
+        logger.warning("aquecimento das previsões falhou: %s", type(erro).__name__)
+        return
+    logger.info("previsões aquecidas: %s", fontes)
 
 
 app = FastAPI(title="agent-cass", lifespan=ciclo_de_vida)

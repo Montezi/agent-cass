@@ -10,9 +10,11 @@ partir do campo "fonte" (ou "fontes") de cada resultado: {"nome", "data", "url"}
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import wraps
+from threading import Lock
 from time import monotonic
 from typing import Any, ParamSpec, TypeVar, get_args
 
@@ -28,7 +30,10 @@ from cass.modelos import PrevisaoSalva, RespostaMeteomatics, RespostaOpenMeteo
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT_S = 5.0  # por fonte: hotspots.geojson, Meteomatics, Open-Meteo e snapshot
+TIMEOUT_S = 5.0  # hotspots.geojson e forecast-snapshot.json
+# Meteomatics e Open-Meteo: com as duas fora, o snapshot ainda chega antes dos 8 s
+# que o app espera pela /api/clima.
+TIMEOUT_AO_VIVO_S = 3.0
 CACHE_TTL_S = 300.0  # o hotspots.geojson só muda num deploy do frontend
 CACHE_CLIMA_TTL_S = 600.0  # o forecast-snapshot.json
 CACHE_PREVISAO_TTL_S = 1800.0  # por hotspot, qualquer que seja a fonte que serviu
@@ -116,14 +121,17 @@ def _ler(url: str, nome: str, modelo: type[M], ttl: float) -> M:
     return valor
 
 
-def _validar(url: str, nome: str, modelo: type[M], auth: httpx.Auth | None = None) -> M:
+def _validar(
+    url: str, nome: str, modelo: type[M], auth: httpx.Auth | None = None,
+    timeout: float = TIMEOUT_S,
+) -> M:
     """GET com timeout, validado contra o modelo; qualquer falha vira _Recusa."""
     try:
-        resposta = httpx.get(url, timeout=TIMEOUT_S, auth=auth)
+        resposta = httpx.get(url, timeout=timeout, auth=auth)
         resposta.raise_for_status()
         return modelo.model_validate_json(resposta.content)
     except httpx.TimeoutException as e:
-        raise _Recusa(erro=f"{nome} não respondeu em {TIMEOUT_S:g} s", url=url) from e
+        raise _Recusa(erro=f"{nome} não respondeu em {timeout:g} s", url=url) from e
     except httpx.HTTPStatusError as e:
         raise _Recusa(erro=f"não consegui ler {nome} (HTTP {e.response.status_code})", url=url) from e
     except httpx.HTTPError as e:
@@ -334,16 +342,34 @@ class PrevisaoIndisponivel(Exception):
         self.falhas = tuple(falhas)
 
 
+_travas: dict[str, Lock] = {}
+_trava_das_travas = Lock()
+
+
+def _trava(chave: str) -> Lock:
+    with _trava_das_travas:
+        return _travas.setdefault(chave, Lock())
+
+
 def previsao_do_hotspot(hotspot: Hotspot) -> PrevisaoObtida:
     """Chuva por dia no hotspot: Meteomatics (se houver credenciais), Open-Meteo e,
-    por fim, a última previsão salva. Cada fonte tem TIMEOUT_S; o resultado fica em
-    cache por 30 min por hotspot (e coordenadas), qualquer que seja a fonte.
+    por fim, a última previsão salva. As fontes ao vivo têm TIMEOUT_AO_VIVO_S e o
+    snapshot TIMEOUT_S; o resultado fica em cache por 30 min por hotspot (e
+    coordenadas), qualquer que seja a fonte.
+
+    Um pedido que chega enquanto o mesmo hotspot está sendo buscado (pelo
+    aquecimento, por exemplo) espera esse resultado em vez de consultar de novo.
     """
     lon, lat = hotspot.geometry.coordinates
     chave = f"previsao:{hotspot.properties.id}:{lat},{lon}"
-    guardado = _cache.get(chave)
-    if guardado is not None and monotonic() < guardado.validade:
-        return guardado.valor
+    with _trava(chave):
+        guardado = _cache.get(chave)
+        if guardado is not None and monotonic() < guardado.validade:
+            return guardado.valor
+        return _buscar_previsao(hotspot, chave)
+
+
+def _buscar_previsao(hotspot: Hotspot, chave: str) -> PrevisaoObtida:
     config = carregar_config()
     falhas: list[str] = []
     for fonte in _fontes_de_previsao(config):
@@ -359,6 +385,27 @@ def previsao_do_hotspot(hotspot: Hotspot) -> PrevisaoObtida:
         return obtida
     logger.warning("previsão de %s indisponível: %s", hotspot.properties.id, "; ".join(falhas))
     raise PrevisaoIndisponivel(falhas)
+
+
+def aquecer_previsoes() -> dict[str, str]:
+    """Busca, em paralelo, a previsão de cada hotspot do hotspots.geojson, para o
+    primeiro pedido já achar o cache cheio. Roda na subida do serviço, em segundo
+    plano. Devolve a fonte que serviu cada hotspot ("indisponível" se nenhuma);
+    vazio se o hotspots.geojson não abrir.
+    """
+    hotspots = hotspots_por_id()
+    if not hotspots:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(len(hotspots), 8), thread_name_prefix="aquecer") as pool:
+        fontes = list(pool.map(_fonte_que_serviu, hotspots.values()))
+    return dict(zip(hotspots, fontes, strict=True))
+
+
+def _fonte_que_serviu(hotspot: Hotspot) -> str:
+    try:
+        return previsao_do_hotspot(hotspot).previsao.source
+    except PrevisaoIndisponivel:
+        return "indisponível"
 
 
 _Fonte = Callable[[Hotspot, Configuracao], PrevisaoObtida]
@@ -379,7 +426,7 @@ def _da_meteomatics(hotspot: Hotspot, config: Configuracao) -> PrevisaoObtida:
     url = f"{URL_METEOMATICS}/{periodo}/precip_24h:mm/{lat},{lon}/json"
     auth = httpx.BasicAuth(config.meteomatics_user, config.meteomatics_password)
     nome = "a Meteomatics"
-    resposta = _validar(url, nome, RespostaMeteomatics, auth)
+    resposta = _validar(url, nome, RespostaMeteomatics, auth, TIMEOUT_AO_VIVO_S)
     dias = [
         _dia((v.date - timedelta(days=1)).date(), v.value)
         for v in resposta.data[0].coordinates[0].dates
@@ -394,7 +441,7 @@ def _da_open_meteo(hotspot: Hotspot, config: Configuracao) -> PrevisaoObtida:
         "forecast_days": DIAS_DA_PREVISAO, "timezone": "GMT",
     }))
     nome = "a Open-Meteo"
-    diario = _validar(url, nome, RespostaOpenMeteo).daily
+    diario = _validar(url, nome, RespostaOpenMeteo, timeout=TIMEOUT_AO_VIVO_S).daily
     dias = []
     for dia, chuva in zip(diario.time, diario.precipitation_sum, strict=True):
         if chuva is None:

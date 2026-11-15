@@ -322,7 +322,7 @@ def test_previsao_tempo_chama_a_cadeia_direto_sem_a_api_clima(
     assert [str(c.request.url) for c in respx_mock.calls] == [URL, str(clima.calls.last.request.url)]
     pedido = clima.calls.last.request
     assert pedido.url.path.endswith("/precip_24h:mm/-30.0,-51.2/json")
-    assert pedido.extensions["timeout"]["read"] == 5.0
+    assert pedido.extensions["timeout"]["read"] == 3.0
 
 
 def test_previsao_tempo_padrao_e_3_dias(rota: respx.Route, clima: respx.Route) -> None:
@@ -407,7 +407,9 @@ def test_timeout_nas_fontes_diz_o_tempo(
 ) -> None:
     ao_vivo_falha(respx_mock, httpx.ConnectTimeout("demorou"))
 
-    assert "não respondeu em 5 s" in previsao_tempo("guaiba-rs")["erro"]
+    erro = previsao_tempo("guaiba-rs")["erro"]
+    assert "a Meteomatics não respondeu em 3 s" in erro
+    assert "a Open-Meteo não respondeu em 3 s" in erro
 
 
 # ---------- previsão salva (forecast-snapshot.json), o último degrau ----------

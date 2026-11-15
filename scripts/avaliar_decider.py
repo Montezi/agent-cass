@@ -377,7 +377,13 @@ def avaliar_gemini(url: str, repeticoes: int) -> dict[str, Any]:
 
     # Um único lifespan mantém o cliente assíncrono cacheado do Gemini no mesmo
     # event loop. Abrir um TestClient por caso fecha o loop do cliente anterior.
-    with servidor_dados() as base, patch.dict(os.environ, ambiente), TestClient(main.app) as cliente:
+    # As fontes da previsão vão ao servidor local (503), e o aquecimento da subida
+    # não roda: a avaliação não sai para a Meteomatics nem para a Open-Meteo.
+    with servidor_dados() as base, patch.dict(os.environ, ambiente), patch.object(
+        ferramentas, "URL_METEOMATICS", f"{base}/meteomatics"
+    ), patch.object(ferramentas, "URL_OPEN_METEO", f"{base}/open-meteo"), patch.object(
+        main, "aquecer_previsoes", dict
+    ), TestClient(main.app) as cliente:
         for repeticao in range(repeticoes):
             for indice, (caso, pergunta, hotspot, idioma) in enumerate(CASOS_E):
                 modos = ("false", "true") if (indice + repeticao) % 2 == 0 else ("true", "false")
@@ -391,7 +397,7 @@ def avaliar_gemini(url: str, repeticoes: int) -> dict[str, Any]:
                     try:
                         with patch.dict(os.environ, {
                             "DECIDER_ATIVO": modo, "DECIDER_URL": url,
-                            "DADOS_BASE": f"{base}/dados", "CLIMA_URL": f"{base}/api/clima",
+                            "DADOS_BASE": f"{base}/dados",
                         }), patch.object(httpx, "post", observar_post), patch.object(
                             main, "_responder_protegido", observar_resposta
                         ), redirect_stdout(io.StringIO()):
