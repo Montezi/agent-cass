@@ -13,6 +13,7 @@ from cass import agente as modulo_agente
 from cass.config import carregar_config
 from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import RespostaDoModelo
+from cass.steering import SteeringCass
 
 
 def chamada(nome: str, identificador: str, **entrada: Any) -> dict:
@@ -111,7 +112,10 @@ def test_criar_agente_bloqueia_setima_chamada_e_limpa_antes_de_voltar_ao_modelo(
     monkeypatch.setattr(modulo_agente, "FERRAMENTAS_ATIVAS", [consultar_hotspot, previsao_tempo])
     config = carregar_config({"GOOGLE_CLOUD_PROJECT": "teste-local"})
     portao, limpa = PortaoDeFerramentas(), LimpaDados()
-    agente = modulo_agente.criar_agente(config, portao=portao, limpa_dados=limpa)
+    agente = modulo_agente.criar_agente(
+        config, portao=portao, limpa_dados=limpa,
+        steering=SteeringCass("Consulte o Guaíba", "guaiba-rs"),
+    )
 
     resposta = invocar(agente)
 

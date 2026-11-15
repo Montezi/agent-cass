@@ -14,11 +14,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
 
-from cass.agente import AgenteDemorou, responder
+from cass.agente import TEMPO_LIMITE_S, AgenteDemorou, responder
 from cass.config import Configuracao, carregar_config
 from cass.contrato import para_contrato, resposta_de_erro
+from cass.guardrails import avaliar_entrada
 from cass.hooks import EventoProgresso, ProgressoERegistro
-from cass.modelos import PedidoAgente, RespostaAgente
+from cass.limites import CORSConfigurado, LimitadorPorIP, verificar_limite_ip
+from cass.modelos import PedidoAgente, RespostaAgente, RespostaCass
+from cass.verificacao import validar_resposta
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +30,13 @@ logger = logging.getLogger(__name__)
 async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     # Falha na subida se faltar configuração, em vez de falhar no primeiro pedido.
     app.state.config = carregar_config()
+    app.state.limite_ip = LimitadorPorIP()
+    app.state.limite_ip_config = app.state.config
     yield
 
 
 app = FastAPI(title="agent-cass", lifespan=ciclo_de_vida)
+app.add_middleware(CORSConfigurado)
 
 
 @app.get("/health")
@@ -40,9 +46,11 @@ def health() -> dict[str, bool]:
 
 @app.post("/api/agente", response_model=RespostaAgente)
 async def api_agente(pedido: PedidoAgente, request: Request) -> RespostaAgente | JSONResponse:
+    if (recusa := _limitar_ip(pedido, request)) is not None:
+        return recusa
     # Pelo contrato, 500 e 504 levam o app ao estado de erro com "perguntar de novo".
     try:
-        resposta, ferramentas = await responder(pedido, request.app.state.config)
+        resposta, ferramentas = await _responder_protegido(pedido, request.app.state.config)
         return para_contrato(resposta, ferramentas)
     except AgenteDemorou:
         logger.warning("o agente passou do tempo limite")
@@ -55,6 +63,45 @@ async def api_agente(pedido: PedidoAgente, request: Request) -> RespostaAgente |
 def _erro(status: int, pedido: PedidoAgente) -> JSONResponse:
     corpo = resposta_de_erro(pedido.language).model_dump()
     return JSONResponse(status_code=status, content=corpo)
+
+
+def _limitar_ip(pedido: PedidoAgente, request: Request) -> JSONResponse | None:
+    espera = verificar_limite_ip(request)
+    if espera is None:
+        return None
+    texto = (
+        "Muitas perguntas em pouco tempo. Aguarde um pouco e tente de novo."
+        if pedido.language == "pt"
+        else "Too many questions in a short time. Please wait and try again."
+    )
+    corpo = RespostaAgente(paragraphs=[texto], tools=[], sources=[]).model_dump()
+    return JSONResponse(status_code=429, content=corpo, headers={"Retry-After": str(espera)})
+
+
+async def _responder_protegido(
+    pedido: PedidoAgente,
+    config: Configuracao,
+    progresso: ProgressoERegistro | None = None,
+) -> tuple[RespostaCass, list[str]]:
+    """Camadas de entrada e saída compartilhadas pelo JSON e pelo stream."""
+    progresso = progresso if progresso is not None else ProgressoERegistro()
+    progresso.iniciar()
+    tipo = "erro"
+    try:
+        async with asyncio.timeout(TEMPO_LIMITE_S):
+            recusa = await asyncio.to_thread(avaliar_entrada, pedido)
+            if recusa is not None:
+                tipo = recusa.tipo
+                return recusa, []
+            resposta, ferramentas = await responder(
+                pedido, config, progresso=progresso, validar=validar_resposta
+            )
+            tipo = resposta.tipo
+            return resposta, ferramentas
+    except TimeoutError as e:
+        raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
+    finally:
+        progresso.finalizar(tipo)
 
 
 class _RespostaSSE(StreamingResponse):
@@ -81,9 +128,14 @@ class _RespostaSSE(StreamingResponse):
 @app.post(
     "/api/agente/stream",
     response_class=StreamingResponse,
+    response_model=None,
     responses={200: {"content": {"text/event-stream": {}}}},
 )
-async def api_agente_stream(pedido: PedidoAgente, request: Request) -> StreamingResponse:
+async def api_agente_stream(
+    pedido: PedidoAgente, request: Request
+) -> StreamingResponse | JSONResponse:
+    if (recusa := _limitar_ip(pedido, request)) is not None:
+        return recusa
     return _RespostaSSE(_eventos_agente(pedido, request.app.state.config))
 
 
@@ -96,7 +148,7 @@ async def _eventos_agente(
 
     async def produzir() -> None:
         try:
-            resposta, ferramentas = await responder(pedido, config, progresso=progresso)
+            resposta, ferramentas = await _responder_protegido(pedido, config, progresso=progresso)
             corpo = para_contrato(resposta, ferramentas).model_dump()
             fila.put_nowait(("resposta", corpo))
         except AgenteDemorou:

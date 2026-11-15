@@ -247,3 +247,20 @@ opcional). Referências oficiais:
 [registro](https://strandsagents.com/docs/api/python/strands.hooks.registry/index.md),
 [eventos](https://strandsagents.com/docs/api/python/strands.hooks.events/index.md) e
 [hooks](https://strandsagents.com/docs/user-guide/sdk/agents/hooks/index.md).
+
+## Limite por IP e respostas das camadas de proteção
+
+O passo 9 aplica a mesma proteção a `/api/agente` e `/api/agente/stream`:
+10 perguntas por minuto por IP, compartilhadas entre as duas rotas, por processo.
+Ao exceder, responde HTTP `429`, `application/json`, antes de abrir qualquer SSE.
+O corpo mantém os quatro campos do contrato, com uma mensagem localizada para
+aguardar e tentar novamente, `tools: []`, `sources: []` e `note: null`.
+O cabeçalho `Retry-After` informa a espera em segundos e é exposto pelo CORS.
+O frontend pode usar essa espera para habilitar a próxima tentativa.
+
+Recusas da camada de entrada usam HTTP `200`, com o texto de recusa no contrato
+atual, sem executar o Gemini. No SSE, isso é um evento terminal `resposta`.
+O `tipo="fora_do_escopo"` continua interno; não se acrescenta `kind` ao contrato.
+Uma segunda saída com números sem apoio ou causalidade indevida devolve uma
+resposta segura, também no mesmo formato público. Os detalhes estão em
+[`guardrails.md`](guardrails.md).

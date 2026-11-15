@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +29,8 @@ from cass.ferramentas import (
 from cass.hooks import ProgressoERegistro
 from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
+from cass.steering import SteeringCass
+from cass.verificacao import resposta_segura
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,7 @@ GATILHOS_DAS_SKILLS: dict[str, re.Pattern[str]] = {
 }
 
 Resultado = tuple[str, dict[str, Any]]  # (ferramenta, o dict que ela devolveu)
+ValidadorResposta = Callable[[RespostaCass, list[Resultado]], bool]
 
 # Apêndice C do plano de desenvolvimento.
 PROMPT_DE_SISTEMA = """\
@@ -156,6 +159,7 @@ def criar_agente(
     progresso: ProgressoERegistro | None = None,
     portao: PortaoDeFerramentas | None = None,
     limpa_dados: LimpaDados | None = None,
+    steering: SteeringCass | None = None,
 ) -> Agent:
     """Um Agent novo por pedido: ele guarda a conversa e recusa chamadas simultâneas.
 
@@ -173,6 +177,7 @@ def criar_agente(
     internas = [ferramenta for plugin in plugins for ferramenta in plugin.tools]
     portao.registrar_ferramentas_internas(internas)
     limpa_dados.registrar_ferramentas_internas(internas)
+    plugins.append(steering if steering is not None else SteeringCass("", None))
     return Agent(
         model=criar_modelo(config),
         tools=FERRAMENTAS_ATIVAS,
@@ -188,6 +193,7 @@ async def responder(
     pedido: PedidoAgente,
     config: Configuracao,
     progresso: ProgressoERegistro | None = None,
+    validar: ValidadorResposta | None = None,
 ) -> tuple[RespostaCass, list[str]]:
     """Roda o agente com saída estruturada e devolve a RespostaCass e as ferramentas usadas.
 
@@ -195,9 +201,13 @@ async def responder(
     RespostaCass; outras falhas (Vertex AI, rede) sobem como vierem.
     """
     progresso = progresso if progresso is not None else ProgressoERegistro()
+    # A camada 4 pode precisar de duas invocações no mesmo pedido. O registro
+    # acompanha o pedido inteiro e o tipo efetivamente devolvido ao endpoint.
+    progresso.finalizar_por_invocacao = False
     progresso.iniciar()
     portao = PortaoDeFerramentas()
     limpa_dados = LimpaDados()
+    steering = SteeringCass(pedido.question, pedido.hotspot_id)
     tipo = "erro"
     try:
         async with asyncio.timeout(TEMPO_LIMITE_S):
@@ -225,36 +235,51 @@ async def responder(
                 progresso=progresso,
                 portao=portao,
                 limpa_dados=limpa_dados,
+                steering=steering,
             )
-            resultado = await agente.invoke_async(
-                _mensagem(pedido.question, hotspot, injetadas),
-                structured_output_model=RespostaDoModelo,
-                limits={"structured_output_attempts": TENTATIVAS_DE_SAIDA},
-            )
+            mensagem = _mensagem(pedido.question, hotspot, injetadas)
+            for tentativa in range(2):
+                resultado = await agente.invoke_async(
+                    mensagem,
+                    structured_output_model=RespostaDoModelo,
+                    limits={"structured_output_attempts": TENTATIVAS_DE_SAIDA},
+                )
+                do_modelo = resultado.structured_output
+                if not isinstance(do_modelo, RespostaDoModelo):
+                    raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
 
-        do_modelo = resultado.structured_output
-        if not isinstance(do_modelo, RespostaDoModelo):
-            raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
-
-        buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
-        resultados = [*buscado, *_resultados_das_ferramentas(agente.messages, portao.negadas)]
-        chamadas = _ferramentas_chamadas(agente.messages, portao.negadas)
-        usadas = list(dict.fromkeys([n for n, _ in buscado] + chamadas))
-        # O que vem das ferramentas o código sabe; não fica a critério do modelo.
-        resposta = RespostaCass(
-            **do_modelo.model_dump(exclude={"hipotese"}),
-            hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
-            idioma=pedido.language,
-            fontes=_fontes(resultados),
-            dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
-        )
-        tipo = resposta.tipo
-        return resposta, usadas
+                buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
+                negadas = portao.negadas | steering.negadas
+                resultados = [*buscado, *_resultados_das_ferramentas(agente.messages, negadas)]
+                chamadas = _ferramentas_chamadas(agente.messages, negadas)
+                usadas = list(dict.fromkeys([n for n, _ in buscado] + chamadas))
+                resposta = RespostaCass(
+                    **do_modelo.model_dump(exclude={"hipotese"}),
+                    hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
+                    idioma=pedido.language,
+                    fontes=_fontes(resultados),
+                    dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
+                )
+                if validar is None or validar(resposta, resultados):
+                    tipo = resposta.tipo
+                    return resposta, usadas
+                if tentativa == 1:
+                    segura = resposta_segura(resposta)
+                    tipo = segura.tipo
+                    return segura, usadas
+                # Mesmo Agent, portão, steering, fila e prazo: a repetição não
+                # concede novas consultas nem reinicia o limite de 20 segundos.
+                mensagem = (
+                    "Revise a resposta: há números sem apoio nos resultados das ferramentas "
+                    "ou uma afirmação causal indevida. Use somente valores efetivamente "
+                    "consultados, com unidade e data correspondentes. Se faltarem dados, "
+                    "diga isso sem inventar números. Trate a relação com El Niño como "
+                    "hipótese, nunca causa comprovada. Responda no idioma do pedido."
+                )
     except TimeoutError as e:
         raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
     finally:
-        # AfterInvocationEvent cuida do caminho normal. Este fechamento cobre
-        # também falha na preparação, timeout e agentes simulados sem callbacks.
+        # Inclui preparação, correção e resposta segura, também nas falhas.
         progresso.finalizar(tipo)
 
 
@@ -318,6 +343,9 @@ def _resultados_das_ferramentas(
                 nomes[bloco["toolUse"]["toolUseId"]] = bloco["toolUse"]["name"]
             elif "toolResult" in bloco:
                 if bloco["toolResult"]["toolUseId"] in negadas:
+                    continue
+                if bloco["toolResult"].get("status") == "error":
+                    # Um número dentro de uma mensagem de erro não é medição.
                     continue
                 nome = nomes.get(bloco["toolResult"]["toolUseId"])
                 if nome not in NOMES_DAS_FERRAMENTAS:

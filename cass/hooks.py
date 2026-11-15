@@ -37,6 +37,7 @@ class ProgressoERegistro(HookProvider):
 
     def __init__(self, fila: asyncio.Queue[EventoProgresso | None] | None = None) -> None:
         self.fila = fila if fila is not None else asyncio.Queue()
+        self.finalizar_por_invocacao = True
         self._inicio: float | None = None
         self._chamadas: list[_Chamada] = []
         self._em_curso: dict[str, _Chamada] = {}
@@ -82,6 +83,8 @@ class ProgressoERegistro(HookProvider):
         self.concluir_ferramenta(evento.tool_use["toolUseId"], evento.duration)
 
     def depois_da_invocacao(self, evento: AfterInvocationEvent) -> None:
+        if not self.finalizar_por_invocacao:
+            return
         saida = evento.result.structured_output if evento.result is not None else None
         self.finalizar(getattr(saida, "tipo", "erro"))
 

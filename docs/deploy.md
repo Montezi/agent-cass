@@ -172,6 +172,9 @@ curl -s -X POST localhost:8082/api/agente -H "Content-Type: application/json" \
 ## Antes do deploy público (passo 10)
 
 O Firebase Hosting não manda token de identidade, então o rewrite de `/api/agente`
-só funciona com o serviço público (`--allow-unauthenticated`). Antes de abrir,
-entram as camadas do passo 9 (limite por IP, tamanho da mensagem, CORS só para o
-`APP_ORIGIN`).
+só funciona com o serviço público (`--allow-unauthenticated`). O serviço aplica
+as camadas do passo 9: tamanho da mensagem, verificação de entrada e saída,
+CORS só para `APP_ORIGIN` e 10 perguntas/min por IP, compartilhadas entre JSON e
+SSE. A cota é local a cada processo/instância; não é um contador global do Cloud
+Run. Confira também a identidade de cliente entregue pelo proxy ao servidor
+antes da publicação. Detalhes e testes em [`guardrails.md`](guardrails.md).

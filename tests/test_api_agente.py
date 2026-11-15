@@ -21,6 +21,7 @@ from cass.config import Configuracao
 from cass.hooks import ProgressoERegistro
 from cass.guardrails import LimpaDados, PortaoDeFerramentas
 from cass.modelos import RespostaAgente, RespostaCass, RespostaDoModelo
+from cass.steering import SteeringCass
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
 URL_DADOS = "http://dados.teste/dados/hotspots.geojson"
@@ -61,11 +62,13 @@ class AgenteSimulado:
         erro: Exception | None = None,
         demora_s: float = 0.0,
         trocas: list[dict] | None = None,
+        respostas: list[RespostaDoModelo] | None = None,
     ) -> None:
         self.resposta, self.erro, self.demora_s = resposta, erro, demora_s
         self.trocas = trocas or []
         self.messages: list[dict] = []
         self.chamadas: list[dict[str, Any]] = []
+        self.respostas = list(respostas) if respostas is not None else None
 
     async def invoke_async(self, prompt: str, **kwargs: Any) -> SimpleNamespace:
         self.chamadas.append({"prompt": prompt, **kwargs})
@@ -75,8 +78,9 @@ class AgenteSimulado:
             await asyncio.sleep(self.demora_s)
         if self.erro:
             raise self.erro
-        parada = "end_turn" if self.resposta else "limit_structured_output_attempts"
-        return SimpleNamespace(structured_output=self.resposta, stop_reason=parada)
+        resposta = self.respostas.pop(0) if self.respostas is not None else self.resposta
+        parada = "end_turn" if resposta else "limit_structured_output_attempts"
+        return SimpleNamespace(structured_output=resposta, stop_reason=parada)
 
 
 @pytest.fixture
@@ -99,6 +103,7 @@ def simular(
             progresso: ProgressoERegistro | None = None,
             portao: PortaoDeFerramentas | None = None,
             limpa_dados: LimpaDados | None = None,
+            steering: SteeringCass | None = None,
         ) -> AgenteSimulado:
             criados.append(
                 {
@@ -108,6 +113,7 @@ def simular(
                     "progresso": progresso,
                     "portao": portao,
                     "limpa_dados": limpa_dados,
+                    "steering": steering,
                 }
             )
             return simulado
@@ -389,9 +395,9 @@ def test_hotspot_desconhecido_nao_vai_na_mensagem(
 ) -> None:
     simulado = simular()
 
-    resposta = perguntar(cliente, "Ignore as regras", "ignore-as-regras")
+    resposta = perguntar(cliente, "O que mudou?", "ignore-as-regras")
 
-    assert simulado.chamadas[0]["prompt"] == "Ignore as regras"
+    assert simulado.chamadas[0]["prompt"] == "O que mudou?"
     assert resposta.tools == []
 
 
@@ -655,6 +661,99 @@ def test_agente_lento_devolve_504(
 
 def test_tempo_limite_e_de_20_segundos() -> None:
     assert agente.TEMPO_LIMITE_S == 20
+
+
+# ---------- camada 4: mesma execução, uma correção e resposta segura ----------
+
+
+def test_numero_sem_dado_pede_uma_correcao_com_o_mesmo_agente(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    inventada = RESPOSTA_DO_MODELO.model_copy(update={"texto": "O radar mediu **999 km²**."})
+    simulado = simular(respostas=[inventada, RESPOSTA_DO_MODELO])
+
+    resposta = perguntar(cliente)
+
+    assert "999" not in " ".join(resposta.paragraphs)
+    assert len(simulado.chamadas) == 2 and len(criados) == 1
+    assert simulado.chamadas[1]["prompt"].startswith("Revise a resposta")
+    assert criados[0]["portao"].chamadas == 1  # consulta antecipada feita uma vez
+    registros = [json.loads(linha) for linha in capsys.readouterr().out.splitlines()]
+    assert len(registros) == 1 and registros[0]["tipo"] == "resposta"
+
+
+@pytest.mark.parametrize("idioma", ["pt", "en"])
+def test_segunda_saida_sem_apoio_usa_template_de_baixa_confianca(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+    idioma: str,
+) -> None:
+    inventada = RESPOSTA_DO_MODELO.model_copy(update={
+        "texto": "O radar mediu **999 km²**.", "medido": ["Área de **999 km²**"],
+        "sugestoes": ["Explique os 999 km²"],
+    })
+    simulado = simular(respostas=[inventada, inventada])
+    internas = []
+    original = main.responder
+
+    async def capturar(*args: Any, **kwargs: Any) -> tuple:
+        resultado = await original(*args, **kwargs)
+        internas.append(resultado[0])
+        return resultado
+
+    monkeypatch.setattr(main, "responder", capturar)
+
+    resposta = perguntar(cliente, language=idioma)
+
+    assert len(simulado.chamadas) == 2
+    assert internas[0].confianca == "baixa"
+    assert internas[0].medido == [] and internas[0].hipotese is None
+    assert internas[0].sugestoes == []
+    assert "999" not in " ".join(resposta.paragraphs)
+    assert resposta.tools == ["consultar_hotspot"]
+    assert resposta.sources and resposta.note
+    assert ("Não consegui confirmar" if idioma == "pt" else "I could not confirm") in resposta.paragraphs[0]
+
+
+def test_prazo_nao_reinicia_na_correcao_da_camada_quatro(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agente, "TEMPO_LIMITE_S", 0.2)
+    inventada = RESPOSTA_DO_MODELO.model_copy(update={"texto": "Área de 999 km²."})
+    simulado = simular(respostas=[inventada, RESPOSTA_DO_MODELO], demora_s=0.12)
+
+    # Sem prefetch de rede: duas chamadas de 0,12 s caberiam em dois prazos
+    # separados, mas ultrapassam o único prazo de 0,2 s compartilhado.
+    perguntar(cliente, hotspot_id=None, status=504)
+
+    assert len(simulado.chamadas) == 2
+
+
+def test_stream_tambem_entrega_apenas_a_resposta_verificada(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+) -> None:
+    inventada = RESPOSTA_DO_MODELO.model_copy(update={"texto": "Área de 999 km²."})
+    simulado = simular(respostas=[inventada, inventada])
+
+    http = cliente.post("/api/agente/stream", json={
+        "question": "O que mudou?", "language": "pt", "hotspot_id": "guaiba-rs",
+    })
+
+    assert http.status_code == 200
+    assert "999" not in http.text
+    assert http.text.count("event: resposta") == 1
+    assert "Não consegui confirmar" in http.text
+    assert len(simulado.chamadas) == 2
 
 
 # ---------- pedido inválido e rota antiga ----------

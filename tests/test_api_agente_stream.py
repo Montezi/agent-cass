@@ -25,6 +25,12 @@ RESPOSTA = RespostaCass(
 )
 
 
+@pytest.fixture(autouse=True)
+def entrada_permitida(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Estes testes isolam o transporte SSE; a camada de entrada tem testes próprios.
+    monkeypatch.setattr(main, "avaliar_entrada", lambda pedido: None)
+
+
 @pytest.fixture
 def cliente(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "projeto-teste")
@@ -38,9 +44,9 @@ def filas(monkeypatch: pytest.MonkeyPatch) -> dict[int, asyncio.Queue]:
     por_hook: dict[int, asyncio.Queue] = {}
     original = main.ProgressoERegistro
 
-    def criar(fila: asyncio.Queue) -> Any:
+    def criar(fila: asyncio.Queue | None = None) -> Any:
         hook = original(fila)
-        por_hook[id(hook)] = fila
+        por_hook[id(hook)] = hook.fila
         return hook
 
     monkeypatch.setattr(main, "ProgressoERegistro", criar)
@@ -60,10 +66,11 @@ def _eventos(texto: str) -> list[tuple[str, dict[str, Any]]]:
 def test_stream_termina_no_mesmo_contrato_do_json(
     cliente: TestClient, filas: dict[int, asyncio.Queue], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def responder(pedido: PedidoAgente, config: Any, progresso: Any = None) -> tuple:
+    async def responder(
+        pedido: PedidoAgente, config: Any, progresso: Any = None, validar: Any = None
+    ) -> tuple:
         if progresso is not None:
             fila = filas[id(progresso)]
-            fila.put_nowait(("pensando", {}))
             fila.put_nowait(("ferramenta", {"nome": "consultar_hotspot"}))
         return RESPOSTA, ["consultar_hotspot"]
 
@@ -97,8 +104,9 @@ def test_falha_e_evento_terminal_com_resposta_localizada(
     status: int,
     language: str,
 ) -> None:
-    async def responder(pedido: PedidoAgente, config: Any, progresso: Any) -> tuple:
-        filas[id(progresso)].put_nowait(("pensando", {}))
+    async def responder(
+        pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+    ) -> tuple:
         raise erro
 
     monkeypatch.setattr(main, "responder", responder)
@@ -116,7 +124,9 @@ def test_falha_e_evento_terminal_com_resposta_localizada(
 def test_resposta_sem_texto_termina_com_erro(
     cliente: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def responder(pedido: PedidoAgente, config: Any, progresso: Any) -> tuple:
+    async def responder(
+        pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+    ) -> tuple:
         return RESPOSTA.model_copy(update={"texto": " "}), []
 
     monkeypatch.setattr(main, "responder", responder)
@@ -124,6 +134,7 @@ def test_resposta_sem_texto_termina_com_erro(
     resposta = cliente.post("/api/agente/stream", json=PEDIDO)
 
     assert _eventos(resposta.text) == [
+        ("pensando", {}),
         ("erro", {"status": 500, "response": resposta_de_erro("pt").model_dump()})
     ]
 
@@ -188,8 +199,9 @@ def test_asgi_entrega_progresso_antes_de_o_agente_terminar(
         entrada: asyncio.Queue[dict] = asyncio.Queue()
         entrada.put_nowait({"type": "http.request", "body": json.dumps(PEDIDO).encode()})
 
-        async def responder(pedido: PedidoAgente, config: Any, progresso: Any) -> tuple:
-            filas[id(progresso)].put_nowait(("pensando", {}))
+        async def responder(
+            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+        ) -> tuple:
             await liberar.wait()
             filas[id(progresso)].put_nowait(("ferramenta", {"nome": "consultar_hotspot"}))
             return RESPOSTA, ["consultar_hotspot"]
@@ -227,8 +239,10 @@ def test_desconexao_cancela_e_aguarda_o_agente(
         entrada: asyncio.Queue[dict] = asyncio.Queue()
         entrada.put_nowait({"type": "http.request", "body": json.dumps(PEDIDO).encode()})
 
-        async def responder(pedido: PedidoAgente, config: Any, progresso: Any) -> tuple:
-            filas[id(progresso)].put_nowait(("pensando", {}))
+        async def responder(
+            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+        ) -> tuple:
+            filas[id(progresso)].put_nowait(("ferramenta", {"nome": "consultar_hotspot"}))
             try:
                 await asyncio.Event().wait()
             finally:
@@ -237,7 +251,7 @@ def test_desconexao_cancela_e_aguarda_o_agente(
                 cancelado.set()
 
         async def enviar(mensagem: dict) -> None:
-            if b"event: pensando" in mensagem.get("body", b""):
+            if b"event: ferramenta" in mensagem.get("body", b""):
                 recebido.set()
                 if versao == "2.4":
                     raise OSError("cliente desconectou durante o envio")
@@ -262,7 +276,9 @@ def test_pedidos_simultaneos_recebem_filas_separadas(
     async def verificar() -> None:
         ambas = asyncio.Event()
 
-        async def responder(pedido: PedidoAgente, config: Any, progresso: Any) -> tuple:
+        async def responder(
+            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+        ) -> tuple:
             filas[id(progresso)].put_nowait(("ferramenta", {"nome": pedido.question}))
             if len(filas) == 2:
                 ambas.set()
@@ -280,8 +296,8 @@ def test_pedidos_simultaneos_recebem_filas_separadas(
         primeiro, segundo = await asyncio.wait_for(
             asyncio.gather(consumir("primeiro"), consumir("segundo")), 1
         )
-        assert primeiro[0] == ("ferramenta", {"nome": "primeiro"})
-        assert segundo[0] == ("ferramenta", {"nome": "segundo"})
+        assert primeiro[:2] == [("pensando", {}), ("ferramenta", {"nome": "primeiro"})]
+        assert segundo[:2] == [("pensando", {}), ("ferramenta", {"nome": "segundo"})]
         assert primeiro[-1][1]["paragraphs"] == ["primeiro"]
         assert segundo[-1][1]["paragraphs"] == ["segundo"]
         assert len({id(fila) for fila in filas.values()}) == 2
