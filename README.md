@@ -134,7 +134,7 @@ curl -fsS -X POST http://localhost:8080/api/agente \
 ## Tests
 
 ```bash
-pytest -q            # 745 tests, no network and no Gemini calls
+pytest -q            # 800 tests, no network and no Gemini calls
 pytest -q -m gemini  # tests that call Gemini for real
 ```
 
