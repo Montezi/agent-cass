@@ -80,7 +80,10 @@ class AgenteSimulado:
             raise self.erro
         resposta = self.respostas.pop(0) if self.respostas is not None else self.resposta
         parada = "end_turn" if resposta else "limit_structured_output_attempts"
-        return SimpleNamespace(structured_output=resposta, stop_reason=parada)
+        return SimpleNamespace(
+            structured_output=resposta, stop_reason=parada,
+            invocation_context=kwargs.get("invocation_context") or object(),
+        )
 
 
 @pytest.fixture
@@ -183,7 +186,10 @@ def test_agente_recebe_o_esquema_e_o_limite_de_tentativas(
 
     chamada = simulado.chamadas[0]
     assert chamada["structured_output_model"] is RespostaDoModelo
-    assert chamada["limits"] == {"structured_output_attempts": 3}
+    assert chamada["limits"] == {
+        "turns": 8, "output_tokens": 8192, "total_tokens": 60000,
+        "structured_output_attempts": 3,
+    }
 
 
 def test_modelo_nao_preenche_fontes_idioma_nem_dados_de_exemplo() -> None:
