@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from cass.contrato import para_contrato
 from cass.modelos import Fonte, Hipotese, RespostaCass
 from cass.verificacao import (
     NaoConfirmado,
@@ -279,8 +280,7 @@ def test_validacao_final_confere_medido_e_hipotese_alem_do_texto() -> None:
     assert not validar_resposta(resposta(hipotese=hipotese), fonte)
 
 
-@pytest.mark.parametrize("idioma", ["pt", "en"])
-def test_resposta_segura_retira_afirmacoes_e_preserva_fontes_sample_sem_mudar_original(idioma: str) -> None:
+def inventada(idioma: str = "pt") -> RespostaCass:
     original = resposta(
         "O El Niño causou uma mudança de 999 km².", idioma, ["Área de 999 km²."],
         Hipotese(texto="Causa certa", evidencia="sem dado", forca="forte"),
@@ -289,9 +289,32 @@ def test_resposta_segura_retira_afirmacoes_e_preserva_fontes_sample_sem_mudar_or
     original.dados_de_exemplo = True
     original.opcoes = ["Opção 999"]
     original.sugestoes = ["Pergunte sobre 999 km²"]
+    return original
+
+
+def hotspot(**campos: Any) -> dict[str, Any]:
+    """O dict de consultar_hotspot para o Guaíba, com as medições do contrato."""
+    p = {
+        "id": "guaiba-rs",
+        "name": {"pt": "Lago Guaíba, RS", "en": "Guaíba Lake, RS (Brazil)"},
+        "dominant_class": "flood", "affected_area_km2": 212, "confidence": 0.86,
+        "last_pass": "2026-11-12", "baseline_pass": "2026-01-14", "threshold_db": 3,
+        "bbox": [-51.35, -30.25, -51.0, -29.85], "layers": {},
+    }
+    p.update(campos)
+    return {
+        "fonte": {"nome": "NISAR", "data": p["last_pass"], "url": "https://dados.teste/hotspots.geojson"},
+        "dados_de_exemplo": True,
+        "hotspot": p,
+    }
+
+
+@pytest.mark.parametrize("idioma", ["pt", "en"])
+def test_resposta_segura_retira_afirmacoes_e_preserva_fontes_sample_sem_mudar_original(idioma: str) -> None:
+    original = inventada(idioma)
     antes = deepcopy(original)
 
-    segura = resposta_segura(original)
+    segura = resposta_segura(original, [])
 
     assert original == antes
     assert segura is not original
@@ -305,6 +328,115 @@ def test_resposta_segura_retira_afirmacoes_e_preserva_fontes_sample_sem_mudar_or
     assert segura.dados_de_exemplo is True
     assert validar_resposta(segura, [])
     assert ("Não consegui" in segura.texto) if idioma == "pt" else ("could not" in segura.texto)
+
+
+@pytest.mark.parametrize(
+    ("idioma", "esperado"),
+    [
+        ("pt", "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **212 km²** de cheia em Lago Guaíba, RS. "
+               "Confiança do modelo: **86%** (alta).\n\n"
+               "Não consegui confirmar outros detalhes nos dados; consulte as fontes ou faça uma "
+               "pergunta mais específica."),
+        ("en", "Between Jan 14, 2026 and Nov 12, 2026, the radar measured **212 km²** of flood in "
+               "Guaíba Lake, RS (Brazil). Model confidence: **86%** (high).\n\n"
+               "I could not confirm other details in the data; check the sources or ask a more "
+               "specific question."),
+    ],
+)
+def test_resposta_segura_monta_o_texto_com_os_dados_do_hotspot(idioma: str, esperado: str) -> None:
+    resultados = [("consultar_hotspot", hotspot())]
+
+    segura = resposta_segura(inventada(idioma), resultados)
+
+    assert segura.texto == esperado
+    assert "999" not in segura.model_dump_json()
+    assert validar_resposta(segura, resultados)
+
+
+@pytest.mark.parametrize(
+    ("campos", "inicio"),
+    [
+        ({"baseline_pass": None}, "Na passagem de 12 nov 2026, o radar mediu **212 km²** de cheia em Lago Guaíba, RS."),
+        ({"baseline_pass": None, "last_pass": None}, "O radar mediu **212 km²** de cheia em Lago Guaíba, RS."),
+        ({"dominant_class": None}, "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **212 km²** de mudança em Lago Guaíba, RS."),
+        ({"affected_area_km2": 412.5, "dominant_class": "fire_deforestation"},
+         "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **412,5 km²** de fogo e desmatamento em Lago Guaíba, RS."),
+        ({"affected_area_km2": None},
+         "Entre 14 jan 2026 e 12 nov 2026, a classe dominante em Lago Guaíba, RS foi cheia; a área ainda não foi calculada."),
+        ({"affected_area_km2": None, "dominant_class": None, "baseline_pass": None},
+         "Em Lago Guaíba, RS, a última passagem do radar foi em 12 nov 2026, ainda sem classe e área calculadas."),
+        ({"affected_area_km2": None, "dominant_class": None, "confidence": None, "last_pass": None},
+         "O radar ainda não tem medição para Lago Guaíba, RS."),
+    ],
+)
+def test_resposta_segura_nunca_inventa_o_que_e_null(campos: dict, inicio: str) -> None:
+    resultados = [("consultar_hotspot", hotspot(**campos))]
+
+    segura = resposta_segura(inventada(), resultados)
+
+    assert segura.texto.startswith(inicio)
+    assert validar_resposta(segura, resultados)
+    if campos.get("confidence", 0.86) is None:
+        assert "Confiança" not in segura.texto
+
+
+@pytest.mark.parametrize(
+    ("confianca", "pt", "en"),
+    [(0.75, "**75%** (alta)", "**75%** (high)"), (0.74, "**74%** (média)", "**74%** (medium)"),
+     (0.5, "**50%** (média)", "**50%** (medium)"), (0.49, "**49%** (baixa)", "**49%** (low)"),
+     (0.875, "**88%** (alta)", "**88%** (high)")],
+)
+def test_resposta_segura_usa_os_niveis_de_confianca_do_contrato(confianca: float, pt: str, en: str) -> None:
+    resultados = [("consultar_hotspot", hotspot(confidence=confianca))]
+
+    assert pt in resposta_segura(inventada("pt"), resultados).texto
+    assert en in resposta_segura(inventada("en"), resultados).texto
+    assert validar_resposta(resposta_segura(inventada("pt"), resultados), resultados)
+
+
+def test_resposta_segura_ignora_erros_e_resultados_sem_hotspot() -> None:
+    resultados = [
+        ("consultar_hotspot", {"erro": "hotspot desconhecido: 'x'", "validos": ["guaiba-rs"]}),
+        ("explicar_classe", {"disponivel": False, "motivo": "ainda não calculado pelo pipeline"}),
+        ("previsao_tempo", {"dias": [{"date": "2026-11-15", "precipitation_mm": 18}]}),
+    ]
+
+    segura = resposta_segura(inventada(), resultados)
+
+    assert segura.texto.startswith("Não consegui confirmar os detalhes nos dados disponíveis.")
+
+
+def test_resposta_segura_traz_ate_tres_hotspots_sem_repetir() -> None:
+    ids = ["guaiba-rs", "kariba", "borneo", "costa-peru"]
+    resultados = [("consultar_hotspot", hotspot(id=i, name={"pt": i, "en": i})) for i in ids]
+    resultados.insert(1, ("consultar_hotspot", hotspot()))
+
+    segura = resposta_segura(inventada(), resultados)
+
+    paragrafos = segura.texto.split("\n\n")
+    assert len(paragrafos) == 4
+    assert [p.split(" em ")[1].split(".")[0] for p in paragrafos[:3]] == ["guaiba-rs", "kariba", "borneo"]
+
+
+def test_resposta_segura_cabe_nos_900_caracteres() -> None:
+    nomes = ["A" * 400, "B" * 400, "C" * 400]
+    resultados = [("consultar_hotspot", hotspot(id=n[0].lower(), name={"pt": n, "en": n})) for n in nomes]
+
+    segura = resposta_segura(inventada(), resultados)
+
+    assert len(segura.texto) <= 900
+    assert "A" * 400 in segura.texto and "B" * 400 not in segura.texto
+
+
+def test_resposta_segura_avisa_dados_de_exemplo_vindos_dos_resultados() -> None:
+    original = inventada()
+    original.dados_de_exemplo = False
+
+    segura = resposta_segura(original, [("consultar_hotspot", hotspot())])
+
+    assert segura.dados_de_exemplo is True
+    nota = para_contrato(segura, ["consultar_hotspot"]).note
+    assert nota is not None and nota.startswith("Dados de exemplo")
 
 
 # ---------- quais valores não foram confirmados, e onde ----------

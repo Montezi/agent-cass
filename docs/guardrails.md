@@ -132,9 +132,15 @@ até 40 caracteres, no máximo 10 valores), nunca com o texto da resposta.
 Na primeira falha, solicita uma correção no mesmo Agent, listando até 8 valores
 ("o valor 2024 não está nos resultados; remova ou use um valor consultado") e,
 se for o caso, pedindo para tratar o El Niño como hipótese. Na segunda falha,
-devolve texto fixo no idioma do pedido, `confianca="baixa"`, sem números não
-confirmados, medido ou hipótese, preservando fontes e aviso de dados de exemplo.
-O formato público continua com `paragraphs`, `tools`, `sources` e `note`.
+descarta o que o modelo escreveu e devolve uma resposta montada pelo código com
+os hotspots consultados (até 3), como o modo demo do frontend: classe, área,
+datas (`baseline_pass` e `last_pass`), confiança do modelo com o nível do
+contrato (alta ≥ 0,75, média ≥ 0,50, baixa), fontes e aviso de dados de exemplo.
+Valores `null` aparecem como "ainda não calculado", nunca como número. Sem
+hotspot nos resultados, volta o texto fixo de "não consegui confirmar". Essa
+resposta passa na própria verificação, tem `confianca="baixa"` e fica sem
+medido, hipótese, opções e sugestões. O formato público continua com
+`paragraphs`, `tools`, `sources` e `note`.
 
 Preparação, decisões de entrada, steering e repetição compartilham o prazo total
 de 20 s, incluindo a conferência inicial do ID. A correção não zera o portão

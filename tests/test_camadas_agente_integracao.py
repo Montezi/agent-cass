@@ -149,6 +149,36 @@ def test_causalidade_persistente_para_apos_guide_e_uma_correcao_da_camada_final(
     assert len(linhas) == 1 and json.loads(linhas[0])["tipo"] == "resposta"
 
 
+def test_segunda_falha_responde_com_os_dados_consultados(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    medido = deepcopy(DADOS)
+    medido["hotspot"].update(
+        name={"pt": "Lago Guaíba, RS", "en": "Guaíba Lake, RS (Brazil)"},
+        dominant_class="flood", confidence=0.86, baseline_pass="2026-01-14",
+    )
+    modelo = ModeloProgramado([
+        [saida("primeira-inventada", "Desde 2024 o radar mediu **999 km²**.")],
+        [saida("segunda-inventada", "O radar mediu **998 km²**.")],
+    ])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = medido
+
+    resposta, ferramentas = asyncio.run(modulo_agente.responder(
+        PEDIDO, carregar_config(), validar=validar_resposta,
+    ))
+
+    publica = para_contrato(resposta, ferramentas)
+    assert publica.paragraphs[0] == (
+        "Entre 14 jan 2026 e 12 nov 2026, o radar mediu **212 km²** de cheia em Lago Guaíba, RS. "
+        "Confiança do modelo: **86%** (alta)."
+    )
+    assert publica.sources == ["NISAR, 12 nov 2026"]
+    assert publica.note and publica.note.startswith("Dados de exemplo")
+    assert "999" not in publica.model_dump_json() and "998" not in publica.model_dump_json()
+    assert validar_resposta(resposta, [("consultar_hotspot", medido)])
+
+
 def test_sem_schema_valido_para_no_limite_e_endpoint_devolve_500(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], ids_conhecidos: list[str],
 ) -> None:

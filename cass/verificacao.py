@@ -8,7 +8,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from cass.formato import Idioma, formatar_numero
+from cass.ferramentas import ROTULOS_DAS_CLASSES
+from cass.formato import Idioma, formatar_data, formatar_numero
 from cass.modelos import RespostaCass
 
 logger = logging.getLogger(__name__)
@@ -469,17 +470,118 @@ def _registrar_recusa(verificacao: Verificacao) -> None:
     )
 
 
-def resposta_segura(resposta: RespostaCass) -> RespostaCass:
-    """Retira afirmações não confirmadas, preservando somente proveniência e aviso de exemplo."""
-    textos: dict[Idioma, str] = {
-        "pt": "Não consegui confirmar os detalhes nos dados disponíveis. Consulte as fontes e tente uma pergunta mais específica.",
-        "en": "I could not confirm the details in the available data. Check the sources and try a more specific question.",
-    }
+MAX_HOTSPOTS_NA_SEGURA = 3
+MAX_CARACTERES_TEXTO = RespostaCass.model_fields["texto"].metadata[0].max_length
+# Níveis da confiança do modelo (data-contract.md, "Confidence"): os mesmos do app.
+NIVEIS_DE_CONFIANCA: dict[Idioma, tuple[str, str, str]] = {
+    "pt": ("alta", "média", "baixa"),
+    "en": ("high", "medium", "low"),
+}
+TEXTOS_SEGUROS: dict[Idioma, dict[str, str]] = {
+    "pt": {
+        "periodo": "Entre {de} e {ate}, ",
+        "passagem": "Na passagem de {ate}, ",
+        "area": "o radar mediu **{area} km²** de {classe} em {nome}.",
+        "mudanca": "mudança",
+        "classe": "a classe dominante em {nome} foi {classe}; a área ainda não foi calculada.",
+        "so_passagem": "Em {nome}, a última passagem do radar foi em {ate}, ainda sem classe e área calculadas.",
+        "sem_medicao": "O radar ainda não tem medição para {nome}.",
+        "confianca": "Confiança do modelo: **{pct}%** ({nivel}).",
+        "fim": "Não consegui confirmar outros detalhes nos dados; consulte as fontes ou faça uma "
+               "pergunta mais específica.",
+        "sem_dados": "Não consegui confirmar os detalhes nos dados disponíveis. Consulte as fontes e "
+                     "tente uma pergunta mais específica.",
+    },
+    "en": {
+        "periodo": "Between {de} and {ate}, ",
+        "passagem": "In the {ate} pass, ",
+        "area": "the radar measured **{area} km²** of {classe} in {nome}.",
+        "mudanca": "change",
+        "classe": "the dominant class in {nome} was {classe}; the area has not been computed yet.",
+        "so_passagem": "In {nome}, the latest radar pass was on {ate}, with no class or area computed yet.",
+        "sem_medicao": "The radar has no measurement for {nome} yet.",
+        "confianca": "Model confidence: **{pct}%** ({nivel}).",
+        "fim": "I could not confirm other details in the data; check the sources or ask a more "
+               "specific question.",
+        "sem_dados": "I could not confirm the details in the available data. Check the sources and "
+                     "try a more specific question.",
+    },
+}
+
+
+def resposta_segura(resposta: RespostaCass, resultados: list[Resultado]) -> RespostaCass:
+    """A resposta montada pelo código com o que as ferramentas devolveram, como o modo
+    demo do frontend: classe, área, confiança, datas, fontes e aviso de dados de exemplo.
+
+    Descarta tudo o que o modelo escreveu (texto, medido, hipótese, opções e sugestões).
+    Cada número e data sai de um resultado; o que é null fica dito como não calculado.
+    Sem hotspot nos resultados, volta o texto fixo de "não consegui confirmar".
+    """
+    t = TEXTOS_SEGUROS[resposta.idioma]
+    paragrafos: list[str] = []
+    for p in _hotspots_dos_resultados(resultados)[:MAX_HOTSPOTS_NA_SEGURA]:
+        paragrafo = _paragrafo_do_hotspot(p, resposta.idioma)
+        if len("\n\n".join([*paragrafos, paragrafo, t["fim"]])) <= MAX_CARACTERES_TEXTO:
+            paragrafos.append(paragrafo)
+    texto = "\n\n".join([*paragrafos, t["fim"]]) if paragrafos else t["sem_dados"]
     return RespostaCass(
         tipo="resposta",
         idioma=resposta.idioma,
-        texto=textos[resposta.idioma],
+        texto=texto,
         confianca="baixa",
         fontes=[fonte.model_copy(deep=True) for fonte in resposta.fontes],
-        dados_de_exemplo=resposta.dados_de_exemplo,
+        dados_de_exemplo=resposta.dados_de_exemplo
+        or any(dados.get("dados_de_exemplo") is True for _, dados in resultados),
     )
+
+
+def _hotspots_dos_resultados(resultados: list[Resultado]) -> list[dict[str, Any]]:
+    """As propriedades de cada hotspot consultado com sucesso, na ordem e sem repetir o id."""
+    hotspots: dict[str, dict[str, Any]] = {}
+    for _, dados in resultados:
+        if "erro" in dados or dados.get("disponivel") is False:
+            continue
+        p = dados.get("hotspot")
+        if isinstance(p, dict) and isinstance(p.get("id"), str):
+            hotspots.setdefault(p["id"], p)
+    return list(hotspots.values())
+
+
+def _paragrafo_do_hotspot(p: dict[str, Any], idioma: Idioma) -> str:
+    t = TEXTOS_SEGUROS[idioma]
+    nome = p.get("name", {}).get(idioma) if isinstance(p.get("name"), dict) else None
+    nome = nome if isinstance(nome, str) and nome.strip() else p["id"]
+    classe = p.get("dominant_class")
+    classe = ROTULOS_DAS_CLASSES[idioma][classe].lower() if classe in ROTULOS_DAS_CLASSES[idioma] else None
+    area, confianca = _medida(p.get("affected_area_km2")), _medida(p.get("confidence"))
+    ate = _data_do_dado(p.get("last_pass"), idioma)
+    de = _data_do_dado(p.get("baseline_pass"), idioma)
+
+    if area is not None:
+        frase = t["area"].format(area=formatar_numero(area, idioma), classe=classe or t["mudanca"], nome=nome)
+    elif classe is not None:
+        frase = t["classe"].format(nome=nome, classe=classe)
+    else:
+        frase = None
+    if frase is not None:
+        inicio = t["periodo"].format(de=de, ate=ate) if de and ate else t["passagem"].format(ate=ate) if ate else ""
+        frase = inicio + frase if inicio else frase[0].upper() + frase[1:]
+    elif ate is not None:
+        frase = t["so_passagem"].format(nome=nome, ate=ate)
+    partes = [frase] if frase else []
+    if confianca is not None and 0 <= confianca <= 1:
+        alta, media, baixa = NIVEIS_DE_CONFIANCA[idioma]
+        nivel = alta if confianca >= 0.75 else media if confianca >= 0.5 else baixa
+        partes.append(t["confianca"].format(pct=round(confianca * 100), nivel=nivel))
+    return " ".join(partes) if partes else t["sem_medicao"].format(nome=nome)
+
+
+def _medida(valor: Any) -> float | None:
+    """Número finito vindo do dado; texto, booleano e null não valem como medição."""
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool) and Decimal(str(valor)).is_finite():
+        return valor
+    return None
+
+
+def _data_do_dado(valor: Any, idioma: Idioma) -> str | None:
+    return formatar_data(valor, idioma) if isinstance(valor, str) and _data_iso(valor) else None

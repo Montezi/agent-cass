@@ -839,9 +839,14 @@ def test_segunda_saida_sem_apoio_usa_template_de_baixa_confianca(
     assert internas[0].medido == [] and internas[0].hipotese is None
     assert internas[0].sugestoes == []
     assert "999" not in " ".join(resposta.paragraphs)
+    # O fixture ainda não tem medição: a resposta montada pelo código diz isso.
+    assert resposta.paragraphs[0] == {
+        "pt": "O radar ainda não tem medição para Lago Guaíba, RS.",
+        "en": "The radar has no measurement for Guaíba Lake, RS (Brazil) yet.",
+    }[idioma]
     assert resposta.tools == ["consultar_hotspot"]
     assert resposta.sources and resposta.note
-    assert ("Não consegui confirmar" if idioma == "pt" else "I could not confirm") in resposta.paragraphs[0]
+    assert ("Não consegui confirmar" if idioma == "pt" else "I could not confirm") in resposta.paragraphs[-1]
 
 
 def test_prazo_nao_reinicia_na_correcao_da_camada_quatro(

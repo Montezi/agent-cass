@@ -282,7 +282,7 @@ async def responder(
                     tipo = resposta.tipo
                     return resposta, usadas
                 if tentativa == 1:
-                    segura = resposta_segura(resposta)
+                    segura = resposta_segura(resposta, resultados)
                     tipo = segura.tipo
                     return segura, usadas
                 # O SDK reinicia o consumo a cada chamada de topo. Reutilizar o
