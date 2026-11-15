@@ -137,6 +137,13 @@ instalado, em testes com Agent real/modelo programado e na documentação oficia
   privado na exceção verifica que ele não aparece na resposta nem nesses logs.
 - **Limite:** configurações de tracing, debug e logs próprios dos SDKs no ambiente
   publicado não foram auditadas. Hooks já registram apenas nomes, tempos e tipo.
+- **Exceção (verificação da saída):** quando a camada final recusa uma resposta,
+  `cass/verificacao.py` registra uma linha de aviso com o campo e o valor de cada
+  número ou data sem apoio (`texto='2024'`, `medido[0]='999'`) e os nomes dos
+  campos com causa afirmada. O valor é só o número ou a data que a verificação
+  reconheceu, em uma linha, com até 40 caracteres e no máximo 10 por recusa. O
+  texto da resposta e a pergunta nunca entram no log. Testes conferem campo,
+  valor, limites e ausência do texto.
 
 ### A6 — pip vulnerável no ambiente de instalação
 
