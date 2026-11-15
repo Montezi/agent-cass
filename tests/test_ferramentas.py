@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -701,3 +701,52 @@ def test_erro_nao_fica_no_cache(respx_mock: respx.MockRouter) -> None:
 
     assert "erro" in listar_hotspots()
     assert len(listar_hotspots()["hotspots"]) == 6
+
+
+# ---------- /api/clima com no máximo 16 dias (api-contract.md) ----------
+
+
+def dias_de_previsao(quantos: int) -> list[dict[str, Any]]:
+    inicio = datetime(2026, 11, 15, tzinfo=UTC)
+    return [
+        {"date": (inicio + timedelta(days=i)).date().isoformat(), "precipitation_mm": i}
+        for i in range(quantos)
+    ]
+
+
+def test_previsao_com_16_dias_e_aceita(rota: respx.Route, respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json={**PREVISAO, "days": dias_de_previsao(16)})
+    )
+
+    resultado = previsao_tempo("guaiba-rs", 7)
+
+    assert resultado["fonte"]["nome"] == "Meteomatics"
+    assert len(resultado["dias"]) == 7
+
+
+def test_previsao_com_17_dias_e_fora_do_contrato_e_usa_a_salva(
+    rota: respx.Route, respx_mock: respx.MockRouter, reserva: respx.Route
+) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json={**PREVISAO, "days": dias_de_previsao(17)})
+    )
+
+    resultado = previsao_tempo("guaiba-rs")
+
+    assert resultado["reserva"] is True
+    assert "não segue o contrato" in resultado["motivo_da_reserva"]
+    assert resultado["fonte"]["nome"] == "Snapshot"
+
+
+def test_previsao_com_17_dias_e_sem_reserva_vira_erro(
+    rota: respx.Route, respx_mock: respx.MockRouter, sem_reserva: respx.Route
+) -> None:
+    respx_mock.get(url__startswith=CLIMA_URL).mock(
+        return_value=httpx.Response(200, json={**PREVISAO, "days": dias_de_previsao(17)})
+    )
+
+    erro = previsao_tempo("guaiba-rs")["erro"]
+
+    assert "a /api/clima não segue o contrato" in erro
+    assert "a previsão salva também falhou" in erro

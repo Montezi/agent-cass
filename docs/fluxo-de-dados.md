@@ -61,7 +61,8 @@ fallback implementado; os dois fornecedores ainda precisam ser confirmados no
 repositório do serviço. Ver `docs/api-contract.md:60` do frontend.
 
 No Cass, `previsao_tempo` usa a mesma reserva: se a `CLIMA_URL` falhar (timeout,
-HTTP, conexão) ou não devolver JSON válido no contrato, lê
+HTTP, conexão) ou não devolver JSON válido no contrato (inclusive com mais de 16
+dias em `days`), lê
 `{DADOS_BASE}/forecast-snapshot.json` (formato do `forecastSnapshotSchema`) e
 devolve a fonte "Snapshot" com a data do arquivo, `reserva: true` e o motivo. Se
 as duas falharem, devolve um erro com os dois motivos.
@@ -70,7 +71,8 @@ Há diferenças entre as cópias dos contratos: o frontend documenta dados v2
 (`baseline_pass`, `threshold_db`, `metadata.schema_version`, `generated_at`) e
 erros 400 para pedidos inválidos; este backend ainda valida com 422. O limite da
 pergunta (até 500 caracteres), a restrição do `hotspot_id` aos ids do
-`hotspots.geojson` e o corpo de até 2 KB (recusado com 413) já seguem o frontend.
+`hotspots.geojson`, o corpo de até 2 KB (recusado com 413) e o `days` de até 16
+itens na `/api/clima` já seguem o frontend.
 A integração deve reconciliar
 o resto em um passo próprio, preservando o contrato público durante esta tarefa.
 

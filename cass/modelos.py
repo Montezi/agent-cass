@@ -162,10 +162,13 @@ class DiaDePrevisao(_Contrato):
     precipitation_mm: Annotated[Numero, Field(ge=0)]
 
 
+MAX_DIAS_DE_PREVISAO = 16  # api-contract.md: mais que isso conta como fora do contrato
+
+
 class PrevisaoClima(_Contrato):
     source: Literal["meteomatics", "open-meteo", "snapshot"]
     updated_at: AwareDatetime
-    days: list[DiaDePrevisao] = Field(min_length=1)
+    days: list[DiaDePrevisao] = Field(min_length=1, max_length=MAX_DIAS_DE_PREVISAO)
 
 
 class PrevisaoSalva(_Contrato):
