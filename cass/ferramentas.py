@@ -37,7 +37,10 @@ TIMEOUT_AO_VIVO_S = 3.0
 MAX_BYTES_DADOS = 1_048_576  # JSON dos seis hotspots e previsões; limite antes do parse.
 CACHE_TTL_S = 300.0  # o hotspots.geojson só muda num deploy do frontend
 CACHE_CLIMA_TTL_S = 600.0  # o forecast-snapshot.json
-CACHE_PREVISAO_TTL_S = 1800.0  # por hotspot, qualquer que seja a fonte que serviu
+CACHE_PREVISAO_TTL_S = 1800.0  # por hotspot, quando serviu a Meteomatics ou a Open-Meteo
+# Quando serviu o snapshot (as fontes ao vivo falharam): o próximo pedido, um minuto
+# depois, volta a tentar as fontes ao vivo em vez de ficar 30 min na reserva.
+CACHE_RESERVA_TTL_S = 60.0
 DIAS_DA_PREVISAO = 7  # o que a cadeia busca; o previsao_tempo pede de 1 a 7
 URL_METEOMATICS = "https://api.meteomatics.com"
 URL_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
@@ -402,8 +405,8 @@ def _trava(chave: str) -> Lock:
 def previsao_do_hotspot(hotspot: Hotspot) -> PrevisaoObtida:
     """Chuva por dia no hotspot: Meteomatics (se houver credenciais), Open-Meteo e,
     por fim, a última previsão salva. As fontes ao vivo têm TIMEOUT_AO_VIVO_S e o
-    snapshot TIMEOUT_S; o resultado fica em cache por 30 min por hotspot (e
-    coordenadas), qualquer que seja a fonte.
+    snapshot TIMEOUT_S. O resultado fica em cache por hotspot (e coordenadas): 30 min
+    se veio de uma fonte ao vivo, 60 s se veio do snapshot.
 
     Um pedido que chega enquanto o mesmo hotspot está sendo buscado (pelo
     aquecimento, por exemplo) espera esse resultado em vez de consultar de novo.
@@ -429,7 +432,8 @@ def _buscar_previsao(hotspot: Hotspot, chave: str) -> PrevisaoObtida:
         obtida = replace(obtida, falhas=tuple(falhas))
         if falhas:
             logger.warning("previsão de %s pela reserva: %s", hotspot.properties.id, "; ".join(falhas))
-        _cache[chave] = _Guardado(obtida, monotonic() + CACHE_PREVISAO_TTL_S)
+        validade = CACHE_RESERVA_TTL_S if obtida.previsao.source == "snapshot" else CACHE_PREVISAO_TTL_S
+        _cache[chave] = _Guardado(obtida, monotonic() + validade)
         return obtida
     logger.warning("previsão de %s indisponível: %s", hotspot.properties.id, "; ".join(falhas))
     raise PrevisaoIndisponivel(falhas)
@@ -438,7 +442,8 @@ def _buscar_previsao(hotspot: Hotspot, chave: str) -> PrevisaoObtida:
 def aquecer_previsoes() -> dict[str, str]:
     """Busca, em paralelo, a previsão de cada hotspot do hotspots.geojson, para o
     primeiro pedido já achar o cache cheio. Roda na subida do serviço, em segundo
-    plano. Devolve a fonte que serviu cada hotspot ("indisponível" se nenhuma);
+    plano, só com AQUECER_PREVISOES=true (cass/main.py). Devolve a fonte que serviu
+    cada hotspot ("indisponível" se nenhuma);
     vazio se o hotspots.geojson não abrir.
     """
     hotspots = hotspots_por_id()

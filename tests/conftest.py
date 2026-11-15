@@ -10,9 +10,10 @@ IDS_DO_FIXTURE = ["norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", 
 
 @pytest.fixture(autouse=True)
 def sem_aquecimento(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cada TestClient sobe o serviço; sem isto, a subida buscaria a previsão dos
-    hotspots em segundo plano e gastaria as rotas do respx de cada teste.
-    Os testes do aquecimento (tests/test_clima.py) religam a função de verdade.
+    """Cada TestClient sobe o serviço; se AQUECER_PREVISOES estiver ligada no
+    ambiente de quem roda os testes, a subida buscaria a previsão dos hotspots em
+    segundo plano e gastaria as rotas do respx de cada teste.
+    Os testes do aquecimento (tests/test_clima.py) religam a variável e a função.
     """
     monkeypatch.setattr(main, "aquecer_previsoes", dict)
 

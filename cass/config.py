@@ -16,7 +16,8 @@ PADROES: dict[str, str] = {
     "DECIDER_URL": "http://127.0.0.1:8099/v1/systemone",
 }
 
-# Só estes valores ligam o Decider; qualquer outro (inclusive erro de digitação) desliga.
+# Só estes valores ligam o Decider e o aquecimento; qualquer outro (inclusive erro de
+# digitação) desliga.
 VERDADEIROS = frozenset({"true", "1", "sim", "yes"})
 
 
@@ -37,6 +38,9 @@ class Configuracao:
     # senha não aparecer num log da configuração.
     meteomatics_user: str = field(default="", repr=False)
     meteomatics_password: str = field(default="", repr=False)
+    # Buscar a previsão dos hotspots na subida, em segundo plano. Desligado por padrão:
+    # com --cpu-throttling, o Cloud Run só dá CPU durante um pedido (veja cass/main.py).
+    aquecer_previsoes: bool = False
 
 
 def _ler(env: Mapping[str, str], nome: str) -> str:
@@ -69,4 +73,5 @@ def carregar_config(env: Mapping[str, str] | None = None) -> Configuracao:
         decider_url=_ler(env, "DECIDER_URL"),
         meteomatics_user=_ler(env, "METEOMATICS_USER"),
         meteomatics_password=_ler(env, "METEOMATICS_PASSWORD"),
+        aquecer_previsoes=_ler(env, "AQUECER_PREVISOES").lower() in VERDADEIROS,
     )

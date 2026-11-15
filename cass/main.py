@@ -39,12 +39,20 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     app.state.limite_ip_config = app.state.config
     app.state.admissao = Admissao()
     app.state.admissao_config = app.state.config
-    # Em segundo plano: o /health responde enquanto as previsões dos hotspots chegam.
-    aquecimento = asyncio.create_task(_aquecer_previsoes())
+    # Aquecimento do cache da previsão: só com AQUECER_PREVISOES=true. Com
+    # --cpu-throttling (o deploy padrão, docs/deploy.md), o Cloud Run só aloca CPU
+    # enquanto atende um pedido; uma tarefa em segundo plano depois da subida fica
+    # praticamente sem CPU, demora a terminar e segura conexões abertas. Os
+    # primeiros pedidos de cada hotspot então pagam a busca (até ~6 s até o
+    # snapshot, dentro dos 8 s do app). Ligue só com --no-cpu-throttling.
+    aquecimento = (
+        asyncio.create_task(_aquecer_previsoes()) if app.state.config.aquecer_previsoes else None
+    )
     yield
-    aquecimento.cancel()
-    with suppress(asyncio.CancelledError):
-        await aquecimento
+    if aquecimento is not None:
+        aquecimento.cancel()
+        with suppress(asyncio.CancelledError):
+            await aquecimento
 
 
 async def _aquecer_previsoes() -> None:

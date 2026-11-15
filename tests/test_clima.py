@@ -454,20 +454,45 @@ def test_cada_hotspot_tem_o_proprio_cache(
     assert rota_meteomatics.call_count == 2
 
 
-def test_resposta_da_reserva_tambem_fica_em_cache(
+def test_open_meteo_tambem_fica_30_min_em_cache(
     cliente: TestClient, hotspots: respx.Route, rota_meteomatics: respx.Route,
-    rota_open_meteo: respx.Route, rota_snapshot: respx.Route,
+    rota_open_meteo: respx.Route, relogio: list[float],
 ) -> None:
-    # Com as fontes ao vivo fora, cada pedido levaria até 10 s de timeouts.
+    rota_meteomatics.respond(500)
+    rota_open_meteo.respond(200, json=open_meteo())
+
+    cliente.get("/api/clima", params=GUAIBA)
+    relogio[0] += 29 * 60
+    hotspots.respond(200, content=FIXTURE.read_bytes())
+    assert cliente.get("/api/clima", params=GUAIBA).json()["source"] == "open-meteo"
+    assert rota_open_meteo.call_count == 1
+
+    relogio[0] += 60
+    cliente.get("/api/clima", params=GUAIBA)
+    assert rota_open_meteo.call_count == 2
+
+
+def test_resposta_da_reserva_fica_so_60_s_em_cache(
+    cliente: TestClient, hotspots: respx.Route, rota_meteomatics: respx.Route,
+    rota_open_meteo: respx.Route, rota_snapshot: respx.Route, relogio: list[float],
+) -> None:
+    # Com as fontes ao vivo fora, cada pedido levaria até 6 s de timeouts; mas o
+    # snapshot não pode esconder por 30 min uma fonte ao vivo que voltou.
     rota_meteomatics.respond(500)
     rota_open_meteo.respond(500)
     rota_snapshot.respond(200, json=SNAPSHOT)
 
     cliente.get("/api/clima", params=GUAIBA)
+    relogio[0] += 59
     segunda = cliente.get("/api/clima", params=GUAIBA)
-
     assert segunda.json()["source"] == "snapshot"
     assert rota_meteomatics.call_count == rota_open_meteo.call_count == 1
+
+    rota_meteomatics.respond(200, json=meteomatics())
+    relogio[0] += 1
+    terceira = cliente.get("/api/clima", params=GUAIBA)
+    assert terceira.json()["source"] == "meteomatics"
+    assert rota_meteomatics.call_count == 2
 
 
 def test_falha_total_nao_fica_em_cache(
@@ -617,9 +642,45 @@ IDS = ["norte-fire-ca", "costa-peru", "norte-amazonia", "guaiba-rs", "kariba", "
 
 
 @pytest.fixture
-def com_aquecimento(monkeypatch: pytest.MonkeyPatch) -> None:
-    # O conftest desliga o aquecimento em todos os testes; estes o religam.
+def aquecimento_ligado(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Desligado por padrão (AQUECER_PREVISOES), por causa do --cpu-throttling.
+    monkeypatch.setenv("AQUECER_PREVISOES", "true")
+
+
+@pytest.fixture
+def com_aquecimento(monkeypatch: pytest.MonkeyPatch, aquecimento_ligado: None) -> None:
+    # O conftest troca o aquecimento por um vazio em todos os testes; estes o religam.
     monkeypatch.setattr(main, "aquecer_previsoes", ferramentas.aquecer_previsoes)
+
+
+def test_subida_nao_aquece_por_padrao(
+    monkeypatch: pytest.MonkeyPatch, hotspots: respx.Route, rota_meteomatics: respx.Route,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("AQUECER_PREVISOES", raising=False)
+    chamadas: list[int] = []
+    monkeypatch.setattr(main, "aquecer_previsoes", lambda: chamadas.append(1) or {})
+
+    with caplog.at_level(logging.INFO, logger="cass.main"), TestClient(main.app) as cliente:
+        assert cliente.get("/health").status_code == 200
+        time.sleep(0.1)
+
+    assert chamadas == []
+    assert rota_meteomatics.call_count == 0
+    assert "aquecid" not in caplog.text
+
+
+@pytest.mark.parametrize("valor", ["false", "0", ""])
+def test_subida_nao_aquece_com_a_variavel_desligada(monkeypatch: pytest.MonkeyPatch, valor: str) -> None:
+    monkeypatch.setenv("AQUECER_PREVISOES", valor)
+    chamadas: list[int] = []
+    monkeypatch.setattr(main, "aquecer_previsoes", lambda: chamadas.append(1) or {})
+
+    with TestClient(main.app) as cliente:
+        cliente.get("/health")
+        time.sleep(0.1)
+
+    assert chamadas == []
 
 
 def esperar(condicao: Any, prazo_s: float = 3.0) -> bool:
@@ -680,7 +741,9 @@ def test_subida_aquece_o_cache_em_segundo_plano(
     assert rota_meteomatics.call_count == 6  # o pedido já achou o cache cheio
 
 
-def test_health_responde_sem_esperar_o_aquecimento(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_responde_sem_esperar_o_aquecimento(
+    monkeypatch: pytest.MonkeyPatch, aquecimento_ligado: None
+) -> None:
     comecou, liberar, terminou = threading.Event(), threading.Event(), threading.Event()
 
     def aquecimento_lento() -> dict[str, str]:
@@ -704,7 +767,7 @@ def test_health_responde_sem_esperar_o_aquecimento(monkeypatch: pytest.MonkeyPat
 
 
 def test_falha_no_aquecimento_nao_derruba_a_subida(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, aquecimento_ligado: None
 ) -> None:
     def quebrar() -> dict[str, str]:
         raise RuntimeError("segredo interno")

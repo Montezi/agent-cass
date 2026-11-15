@@ -65,12 +65,15 @@ e `precipitation_mm`.
   Uma fonte que falha (timeout, HTTP, conexão, redirecionamento) ou sai do formato
   (chuva negativa ou nula no primeiro dia, outra unidade) passa a vez para a
   próxima. Se as três falharem, 503: o app lê o snapshot por conta própria.
-- **Cache** de 30 min por hotspot, qualquer que seja a fonte que serviu. Uma falha
-  total não fica em cache. Com as duas fontes ao vivo sem responder, chegar ao
-  snapshot leva cerca de 6 s, dentro dos 8 s do app.
-- **Aquecimento:** na subida, o serviço busca a previsão dos hotspots em paralelo,
-  em segundo plano; o `/health` não espera. Um pedido que chega enquanto o mesmo
-  hotspot está sendo buscado espera esse resultado em vez de consultar de novo.
+- **Cache** por hotspot: 30 min quando serviu a Meteomatics ou a Open-Meteo, 60 s
+  quando serviu o snapshot (assim, um minuto depois, as fontes ao vivo são tentadas
+  de novo). Uma falha total não fica em cache. Com as duas fontes ao vivo sem
+  responder, chegar ao snapshot leva cerca de 6 s, dentro dos 8 s do app.
+- **Aquecimento** (desligado por padrão): com `AQUECER_PREVISOES=true`, na subida o
+  serviço busca a previsão dos hotspots em paralelo, em segundo plano; o `/health`
+  não espera. Com `--cpu-throttling` no Cloud Run, esse trabalho fica sem CPU, por
+  isso o padrão é `false` (docs/deploy.md, seção 5). Um pedido que chega enquanto o
+  mesmo hotspot está sendo buscado espera esse resultado em vez de consultar de novo.
 
 As ferramentas `explicar_classe`, `hipotese` e `exposicao` ainda devolvem
 `SEM_STATS`: o backend não lê `stats/<id>.json`. Esse é um trabalho de integração

@@ -165,6 +165,18 @@ pedido, inclusive durante o stream SSE; o `--cpu-boost` dá CPU extra na subida 
 frio. Os 8 GiB, as 4 CPUs e o `--no-cpu-throttling` são da variante com Decider
 (seção abaixo), que mantém um modelo carregado em memória.
 
+**Aquecimento das previsões desligado.** Com `--cpu-throttling`, o Cloud Run só
+dá CPU à instância enquanto ela atende um pedido. Um trabalho em segundo plano
+iniciado na subida, como buscar a previsão dos seis hotspots para encher o cache,
+fica praticamente sem CPU assim que a subida termina: demora a acabar, segura
+conexões abertas e não garante cache cheio. Por isso o aquecimento só roda com
+`AQUECER_PREVISOES=true`, e o padrão é `false` (a variável fica fora do
+`--set-env-vars` acima). Sem ele, o primeiro pedido de cada hotspot paga a busca
+(até cerca de 6 s quando só o snapshot responde, dentro dos 8 s do app), e os
+seguintes acham o cache: 30 min para Meteomatics ou Open-Meteo, 60 s para o
+snapshot. Só ligue o aquecimento numa revisão com `--no-cpu-throttling`, como a
+variante com Decider.
+
 Para a demonstração pública, `--max=2` limita a escala no nível do serviço,
 `--max-instances=2` também limita a revisão e `--concurrency=4` admite até quatro
 pedidos simultâneos por instância. É um ponto inicial conservador: medir latência
