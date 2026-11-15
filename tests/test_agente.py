@@ -120,6 +120,19 @@ def test_agente_tem_o_prompt_do_apendice_c(config: Configuracao) -> None:
     )
 
 
+@pytest.mark.parametrize("idioma", ["pt", "en"])
+def test_prompt_proibe_numeros_de_conhecimento_geral_e_arredondar(
+    config: Configuracao, idioma: str
+) -> None:
+    regra = (
+        "- Não cite anos, prazos ou números de conhecimento geral (como cheias passadas "
+        "ou o intervalo de passagens do radar); não arredonde nem converta unidades."
+    )
+
+    assert regra in criar_agente(config, idioma).system_prompt
+    assert criar_modelo(config).get_config()["params"]["temperature"] == 0.2
+
+
 def test_cada_pedido_ganha_um_agente_novo(config: Configuracao) -> None:
     # O Agent guarda a conversa e não aceita duas chamadas ao mesmo tempo.
     assert criar_agente(config) is not criar_agente(config)
