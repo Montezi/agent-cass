@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock
@@ -18,6 +19,7 @@ from cass.contrato import para_contrato
 from cass.hooks import ProgressoERegistro
 from cass.modelos import PedidoAgente, RespostaAgente
 from cass.verificacao import afirma_causalidade, validar_resposta
+from test_api_agente_stream import _eventos
 from test_guardrails_integracao import ModeloProgramado, chamada
 
 DADOS = {
@@ -445,3 +447,133 @@ def test_endpoint_no_limite_de_tokens(
     if antecipado:
         assert corpo.paragraphs[0].startswith(INICIO_SEGURO)
         assert "Texto cortado" not in http.text
+
+
+# ---------- tempo limite ----------
+
+
+class ModeloQueDemora(ModeloProgramado):
+    """Um passo "demora" no roteiro segura a chamada ao modelo até o prazo acabar."""
+
+    async def stream(self, messages: Any, *args: Any, **kwargs: Any):
+        if self.roteiro and self.roteiro[0] == "demora":
+            self.recebidas.append(deepcopy(messages))
+            self.roteiro.pop(0)
+            await asyncio.sleep(30)
+        async for evento in super().stream(messages, *args, **kwargs):
+            yield evento
+
+
+def prazo_curto(monkeypatch: pytest.MonkeyPatch, *modulos: Any, segundos: float = 0.3) -> None:
+    for modulo in modulos:
+        monkeypatch.setattr(modulo, "TEMPO_LIMITE_S", segundos)
+
+
+def test_tempo_limite_com_hotspot_aberto_vira_resposta_segura(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="cass.agente")
+    _, prefetch = configurar(monkeypatch, ModeloQueDemora(["demora"]), [])
+    prefetch.return_value = medido()
+    prazo_curto(monkeypatch, modulo_agente)
+
+    inicio = time.monotonic()
+    resposta, ferramentas = asyncio.run(modulo_agente.responder(
+        PEDIDO, carregar_config(), validar=validar_resposta,
+    ))
+
+    assert time.monotonic() - inicio < 2
+    assert resposta.texto.startswith(INICIO_SEGURO)
+    assert resposta.confianca == "baixa" and resposta.dados_de_exemplo is True
+    assert ferramentas == ["consultar_hotspot"]
+    assert [r.getMessage() for r in caplog.records] == ["tempo limite; resposta segura"]
+
+
+def test_tempo_limite_usa_o_hotspot_que_o_modelo_consultou(monkeypatch: pytest.MonkeyPatch) -> None:
+    @tool
+    async def consultar_hotspot(id: str) -> dict:
+        """Medição local do Guaíba."""
+        return medido()
+
+    modelo = ModeloQueDemora([[chamada("consultar_hotspot", "consulta", id="guaiba-rs")], "demora"])
+    _, prefetch = configurar(monkeypatch, modelo, [consultar_hotspot])
+    prefetch.return_value = None
+    prazo_curto(monkeypatch, modulo_agente)
+
+    resposta, ferramentas = asyncio.run(modulo_agente.responder(
+        PEDIDO, carregar_config(), validar=validar_resposta,
+    ))
+
+    assert resposta.texto.startswith(INICIO_SEGURO)
+    assert ferramentas == ["consultar_hotspot"]
+
+
+def test_tempo_limite_na_correcao_tambem_vira_resposta_segura(monkeypatch: pytest.MonkeyPatch) -> None:
+    modelo = ModeloQueDemora([[saida("inventada", "O radar mediu **999 km²**.")], "demora"])
+    _, prefetch = configurar(monkeypatch, modelo, [])
+    prefetch.return_value = medido()
+    prazo_curto(monkeypatch, modulo_agente)
+
+    resposta, _ = asyncio.run(modulo_agente.responder(PEDIDO, carregar_config(), validar=validar_resposta))
+
+    assert resposta.texto.startswith(INICIO_SEGURO)
+    assert "999" not in resposta.model_dump_json()
+
+
+def test_tempo_limite_sem_hotspot_segue_como_agente_demorou(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, prefetch = configurar(monkeypatch, ModeloQueDemora(["demora"]), [])
+    prefetch.return_value = None
+    prazo_curto(monkeypatch, modulo_agente)
+
+    with pytest.raises(modulo_agente.AgenteDemorou):
+        asyncio.run(modulo_agente.responder(PEDIDO, carregar_config(), validar=validar_resposta))
+
+
+@pytest.mark.parametrize(("antecipado", "status"), [(True, 200), (False, 504)])
+def test_endpoint_no_tempo_limite(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, ids_conhecidos: list[str],
+    antecipado: bool, status: int,
+) -> None:
+    _, prefetch = configurar(monkeypatch, ModeloQueDemora(["demora"]), [])
+    prefetch.return_value = medido() if antecipado else None
+    # Como em produção: a mesma constante nos dois módulos; o prazo do endpoint,
+    # que começa antes, é o que vence.
+    prazo_curto(monkeypatch, modulo_agente, main)
+
+    with caplog.at_level("WARNING"), TestClient(main.app) as cliente:
+        http = cliente.post("/api/agente", json=PEDIDO.model_dump())
+
+    assert http.status_code == status
+    corpo = RespostaAgente.model_validate(http.json())
+    if antecipado:
+        assert corpo.paragraphs[0].startswith(INICIO_SEGURO)
+        assert corpo.tools == ["consultar_hotspot"]
+        assert corpo.sources == ["NISAR, 12 nov 2026"]
+        assert "tempo limite; resposta segura" in caplog.text
+    else:
+        assert "o agente passou do tempo limite" in caplog.text
+        assert "resposta segura" not in caplog.text
+
+
+@pytest.mark.parametrize("antecipado", [True, False])
+def test_stream_no_tempo_limite(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, ids_conhecidos: list[str],
+    antecipado: bool,
+) -> None:
+    _, prefetch = configurar(monkeypatch, ModeloQueDemora(["demora"]), [])
+    prefetch.return_value = medido() if antecipado else None
+    prazo_curto(monkeypatch, modulo_agente, main)
+
+    with caplog.at_level("WARNING"), TestClient(main.app) as cliente:
+        http = cliente.post("/api/agente/stream", json=PEDIDO.model_dump())
+
+    assert http.status_code == 200
+    nome, dados = _eventos(http.text)[-1]
+    if antecipado:
+        assert nome == "resposta"
+        corpo = RespostaAgente.model_validate(dados)
+        assert corpo.paragraphs[0].startswith(INICIO_SEGURO)
+        assert "tempo limite; resposta segura" in caplog.text
+    else:
+        assert nome == "erro" and dados["status"] == 504
+        assert "resposta segura" not in caplog.text

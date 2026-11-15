@@ -6,6 +6,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Callable, Collection, Iterable
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -120,6 +121,20 @@ class AgenteSemResposta(Exception):
     """O agente terminou sem uma RespostaCass válida."""
 
 
+@dataclass
+class Andamento:
+    """O que o pedido já consultou, preenchido por responder enquanto roda.
+
+    Se o prazo acabar (no responder ou no endpoint, cujo prazo começa antes e vence
+    primeiro), quem pegou o tempo limite monta a resposta segura com isso
+    (resposta_no_tempo_limite), em vez de devolver 504.
+    """
+
+    hotspot: dict[str, Any] | None = None  # o hotspot aberto, já consultado
+    agente: Agent | None = None  # agent.messages guarda os resultados das ferramentas
+    negadas: Callable[[], Collection[str]] = field(default=lambda: ())
+
+
 @lru_cache(maxsize=4)
 def criar_modelo(config: Configuracao) -> GeminiModel:
     """GeminiModel pela Vertex AI, autenticado por ADC (sem chave de API).
@@ -216,12 +231,16 @@ async def responder(
     config: Configuracao,
     progresso: ProgressoERegistro | None = None,
     validar: ValidadorResposta | None = None,
+    andamento: Andamento | None = None,
 ) -> tuple[RespostaCass, list[str]]:
     """Roda o agente com saída estruturada e devolve a RespostaCass e as ferramentas usadas.
 
-    Levanta AgenteDemorou depois de TEMPO_LIMITE_S e AgenteSemResposta se não houver
-    RespostaCass; outras falhas (Vertex AI, rede) sobem como vierem.
+    Depois de TEMPO_LIMITE_S, devolve a resposta segura se o hotspot já tiver sido
+    consultado; senão, levanta AgenteDemorou. Levanta AgenteSemResposta se não houver
+    RespostaCass; outras falhas (Vertex AI, rede) sobem como vierem. `andamento`, se
+    dado, é preenchido para quem chamou montar a resposta segura no próprio prazo.
     """
+    andamento = andamento if andamento is not None else Andamento()
     progresso = progresso if progresso is not None else ProgressoERegistro()
     # A camada 4 pode precisar de duas invocações no mesmo pedido. O registro
     # acompanha o pedido inteiro e o tipo efetivamente devolvido ao endpoint.
@@ -230,6 +249,7 @@ async def responder(
     portao = PortaoDeFerramentas()
     limpa_dados = LimpaDados()
     steering = SteeringCass(pedido.question, pedido.hotspot_id)
+    andamento.negadas = lambda: portao.negadas | steering.negadas
     tipo = "erro"
     try:
         async with asyncio.timeout(TEMPO_LIMITE_S):
@@ -244,6 +264,7 @@ async def responder(
                 try:
                     dados = await _buscar_hotspot(pedido.hotspot_id)
                     hotspot = limpa_dados.limpar_dados(dados) if dados is not None else None
+                    andamento.hotspot = hotspot
                 finally:
                     progresso.concluir_ferramenta("hotspot-aberto")
             else:
@@ -259,6 +280,7 @@ async def responder(
                 limpa_dados=limpa_dados,
                 steering=steering,
             )
+            andamento.agente = agente
             mensagem = _mensagem(pedido.question, hotspot, injetadas)
             contexto_invocacao = None
             for tentativa in range(2):
@@ -277,18 +299,17 @@ async def responder(
                 except MaxTokensReachedException:
                     # A resposta foi cortada no teto. Com um hotspot já consultado, a
                     # resposta montada pelo código é útil; sem ele, segue o erro (500).
-                    resultados, usadas = _coletados(agente, hotspot, portao.negadas | steering.negadas)
-                    if not hotspots_dos_resultados(resultados):
+                    no_limite = _segura_com_o_que_foi_consultado(andamento, pedido.language)
+                    if no_limite is None:
                         raise
                     logger.warning("limite de tokens; resposta segura")
-                    segura = resposta_segura(_resposta_vazia(pedido, resultados), resultados)
-                    tipo = segura.tipo
-                    return segura, usadas
+                    tipo = no_limite[0].tipo
+                    return no_limite
                 do_modelo = resultado.structured_output
                 if not isinstance(do_modelo, RespostaDoModelo):
                     raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
 
-                resultados, usadas = _coletados(agente, hotspot, portao.negadas | steering.negadas)
+                resultados, usadas = _coletados(agente.messages, hotspot, andamento.negadas())
                 resposta = RespostaCass(
                     **do_modelo.model_dump(exclude={"hipotese"}),
                     hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
@@ -319,28 +340,53 @@ async def responder(
                 # concede novas consultas nem reinicia o prazo de TEMPO_LIMITE_S.
                 mensagem = _mensagem_de_correcao(verificacao, resultados, pedido.language)
     except TimeoutError as e:
-        raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
+        no_prazo = resposta_no_tempo_limite(andamento, pedido.language)
+        if no_prazo is None:
+            raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
+        tipo = no_prazo[0].tipo
+        return no_prazo
     finally:
         # Inclui preparação, correção e resposta segura, também nas falhas.
         progresso.finalizar(tipo)
 
 
+def resposta_no_tempo_limite(
+    andamento: Andamento, idioma: Literal["pt", "en"]
+) -> tuple[RespostaCass, list[str]] | None:
+    """Resposta segura com o que o pedido já consultou quando o prazo acabou; None se
+    nenhum hotspot foi consultado (quem chamou segue com o 504). Registra no log."""
+    no_prazo = _segura_com_o_que_foi_consultado(andamento, idioma)
+    if no_prazo is not None:
+        logger.warning("tempo limite; resposta segura")
+    return no_prazo
+
+
+def _segura_com_o_que_foi_consultado(
+    andamento: Andamento, idioma: Literal["pt", "en"]
+) -> tuple[RespostaCass, list[str]] | None:
+    mensagens = andamento.agente.messages if andamento.agente is not None else []
+    resultados, usadas = _coletados(mensagens, andamento.hotspot, andamento.negadas())
+    if not hotspots_dos_resultados(resultados):
+        return None
+    return resposta_segura(_resposta_vazia(idioma, resultados), resultados), usadas
+
+
 def _coletados(
-    agente: Agent, hotspot: dict[str, Any] | None, negadas: Collection[str]
+    mensagens: list[dict[str, Any]], hotspot: dict[str, Any] | None, negadas: Collection[str]
 ) -> tuple[list[Resultado], list[str]]:
     """Resultados das ferramentas (com o hotspot antecipado primeiro) e as ferramentas usadas."""
     buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
-    resultados = [*buscado, *_resultados_das_ferramentas(agente.messages, negadas)]
-    chamadas = _ferramentas_chamadas(agente.messages, negadas)
+    resultados = [*buscado, *_resultados_das_ferramentas(mensagens, negadas)]
+    chamadas = _ferramentas_chamadas(mensagens, negadas)
     return resultados, list(dict.fromkeys([n for n, _ in buscado] + chamadas))
 
 
-def _resposta_vazia(pedido: PedidoAgente, resultados: list[Resultado]) -> RespostaCass:
+def _resposta_vazia(idioma: Literal["pt", "en"], resultados: list[Resultado]) -> RespostaCass:
     """Base da resposta segura quando o modelo não chegou a responder: só idioma, fontes
     e aviso de dados de exemplo, tirados dos resultados."""
     return RespostaCass(
         tipo="erro",
-        idioma=pedido.language,
+        idioma=idioma,
         texto="",
         confianca="baixa",
         fontes=_fontes(resultados),

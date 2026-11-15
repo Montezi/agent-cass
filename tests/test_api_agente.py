@@ -713,7 +713,7 @@ def test_resposta_sem_texto_devolve_500(
     perguntar(cliente, status=500)
 
 
-def test_agente_lento_devolve_504(
+def test_agente_lento_sem_hotspot_consultado_devolve_504(
     cliente: TestClient,
     simular: Callable[..., AgenteSimulado],
     dados: respx.Route,
@@ -723,10 +723,29 @@ def test_agente_lento_devolve_504(
     simular(demora_s=5)
 
     inicio = time.monotonic()
-    resposta = perguntar(cliente, "What changed?", "kariba", "en", status=504)
+    resposta = perguntar(cliente, "What changed?", None, "en", status=504)
 
     assert time.monotonic() - inicio < 2
     assert "try again" in resposta.paragraphs[0]
+
+
+def test_agente_lento_com_hotspot_consultado_devolve_a_resposta_segura(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agente, "TEMPO_LIMITE_S", 0.05)
+    simular(demora_s=5)
+
+    inicio = time.monotonic()
+    resposta = perguntar(cliente, "What changed?", "kariba", "en", status=200)
+
+    assert time.monotonic() - inicio < 2
+    # O fixture ainda não tem medição: a resposta segura diz isso, com a fonte.
+    assert resposta.paragraphs[0].startswith("The radar has no measurement for ")
+    assert resposta.tools == ["consultar_hotspot"]
+    assert resposta.sources and resposta.note
 
 
 def test_tempo_limite_e_de_35_segundos() -> None:

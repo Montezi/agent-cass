@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
 
-from cass.agente import TEMPO_LIMITE_S, AgenteDemorou, responder
+from cass.agente import TEMPO_LIMITE_S, AgenteDemorou, Andamento, resposta_no_tempo_limite, responder
 from cass.config import Configuracao, carregar_config
 from cass.contrato import para_contrato, resposta_de_erro
 from cass.ferramentas import PrevisaoIndisponivel, hotspots_por_id, ids_dos_hotspots
@@ -135,14 +135,20 @@ async def api_agente(pedido: PedidoAgente, request: Request) -> RespostaAgente |
     if (recusa := _limitar_ip(pedido, request)) is not None:
         return recusa
     # Pelo contrato, 500 e 504 levam o app ao estado de erro com "perguntar de novo".
+    andamento = Andamento()
     try:
         async with asyncio.timeout(TEMPO_LIMITE_S):
             pedido, recusa = await _conferir_hotspot(pedido)
             if recusa is not None:
                 return recusa
-            resposta, ferramentas = await _responder_protegido(pedido, request.app.state.config)
+            resposta, ferramentas = await _responder_protegido(
+                pedido, request.app.state.config, andamento=andamento
+            )
             return para_contrato(resposta, ferramentas)
     except (AgenteDemorou, TimeoutError):
+        # Com o hotspot já consultado, a resposta montada pelo código vale mais que o 504.
+        if (no_prazo := resposta_no_tempo_limite(andamento, pedido.language)) is not None:
+            return para_contrato(*no_prazo)
         logger.warning("o agente passou do tempo limite")
         return _erro(504, pedido)
     except Exception as erro:
@@ -197,6 +203,7 @@ async def _responder_protegido(
     pedido: PedidoAgente,
     config: Configuracao,
     progresso: ProgressoERegistro | None = None,
+    andamento: Andamento | None = None,
 ) -> tuple[RespostaCass, list[str]]:
     """Camadas de entrada e saída compartilhadas pelo JSON e pelo stream."""
     progresso = progresso if progresso is not None else ProgressoERegistro()
@@ -209,7 +216,7 @@ async def _responder_protegido(
                 tipo = recusa.tipo
                 return recusa, []
             resposta, ferramentas = await responder(
-                pedido, config, progresso=progresso, validar=validar_resposta
+                pedido, config, progresso=progresso, validar=validar_resposta, andamento=andamento
             )
             tipo = resposta.tipo
             return resposta, ferramentas
@@ -272,14 +279,20 @@ async def _eventos_agente(
     """Envia o progresso em ordem e uma única resposta ou erro terminal."""
     fila: asyncio.Queue[EventoProgresso | None] = asyncio.Queue()
     progresso = ProgressoERegistro(fila)
+    andamento = Andamento()
 
     async def produzir() -> None:
         try:
             async with asyncio.timeout_at(prazo):
-                resposta, ferramentas = await _responder_protegido(pedido, config, progresso=progresso)
+                resposta, ferramentas = await _responder_protegido(
+                    pedido, config, progresso=progresso, andamento=andamento
+                )
                 corpo = para_contrato(resposta, ferramentas).model_dump()
                 fila.put_nowait(("resposta", corpo))
         except (AgenteDemorou, TimeoutError):
+            if (no_prazo := resposta_no_tempo_limite(andamento, pedido.language)) is not None:
+                fila.put_nowait(("resposta", para_contrato(*no_prazo).model_dump()))
+                return
             logger.warning("o agente passou do tempo limite no stream")
             fila.put_nowait(
                 ("erro", {"status": 504, "response": resposta_de_erro(pedido.language).model_dump()})

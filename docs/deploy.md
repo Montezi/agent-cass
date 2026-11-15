@@ -288,6 +288,9 @@ gcloud run services logs read "$SERVICO" --region "$REGIAO" --limit=50
 
 Cada pergunta registra uma linha JSON com ferramentas, tempos e tipo. Falhas
 aparecem como `o agente falhou` (500) ou `o agente passou do tempo limite` (504).
+Um tempo limite com o hotspot já consultado aparece como `tempo limite; resposta
+segura` (200, resposta montada pelo código), e o corte no teto de tokens como
+`limite de tokens; resposta segura`.
 
 ## 8. Voltar para a revisão anterior
 

@@ -67,7 +67,7 @@ def test_stream_termina_no_mesmo_contrato_do_json(
     cliente: TestClient, filas: dict[int, asyncio.Queue], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def responder(
-        pedido: PedidoAgente, config: Any, progresso: Any = None, validar: Any = None
+        pedido: PedidoAgente, config: Any, progresso: Any = None, validar: Any = None, andamento: Any = None
     ) -> tuple:
         if progresso is not None:
             fila = filas[id(progresso)]
@@ -105,7 +105,7 @@ def test_falha_e_evento_terminal_com_resposta_localizada(
     language: str,
 ) -> None:
     async def responder(
-        pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+        pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None, andamento: Any = None
     ) -> tuple:
         raise erro
 
@@ -125,7 +125,7 @@ def test_resposta_sem_texto_termina_com_erro(
     cliente: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def responder(
-        pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+        pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None, andamento: Any = None
     ) -> tuple:
         return RESPOSTA.model_copy(update={"texto": " "}), []
 
@@ -200,7 +200,7 @@ def test_asgi_entrega_progresso_antes_de_o_agente_terminar(
         entrada.put_nowait({"type": "http.request", "body": json.dumps(PEDIDO).encode()})
 
         async def responder(
-            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None, andamento: Any = None
         ) -> tuple:
             await liberar.wait()
             filas[id(progresso)].put_nowait(("ferramenta", {"nome": "consultar_hotspot"}))
@@ -240,7 +240,7 @@ def test_desconexao_cancela_e_aguarda_o_agente(
         entrada.put_nowait({"type": "http.request", "body": json.dumps(PEDIDO).encode()})
 
         async def responder(
-            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None, andamento: Any = None
         ) -> tuple:
             filas[id(progresso)].put_nowait(("ferramenta", {"nome": "consultar_hotspot"}))
             try:
@@ -277,7 +277,7 @@ def test_pedidos_simultaneos_recebem_filas_separadas(
         ambas = asyncio.Event()
 
         async def responder(
-            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None
+            pedido: PedidoAgente, config: Any, progresso: Any, validar: Any = None, andamento: Any = None
         ) -> tuple:
             filas[id(progresso)].put_nowait(("ferramenta", {"nome": pedido.question}))
             if len(filas) == 2:

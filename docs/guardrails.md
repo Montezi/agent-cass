@@ -165,8 +165,16 @@ cortada no teto (`MaxTokensReachedException`, de `strands.types.exceptions`) e j
 houver um hotspot nos resultados (antecipado ou consultado), o pedido devolve a
 resposta montada pelo código e registra "limite de tokens; resposta segura" no
 log; sem hotspot, segue como erro 500.
+O mesmo vale para o prazo de 35 s, no `/api/agente` e no stream: se o tempo acabar
+com o hotspot já consultado (antecipado ou pelo modelo), sai a resposta montada
+pelo código, com status 200 (no stream, o evento `resposta`), e o log registra
+"tempo limite; resposta segura"; sem hotspot, segue o 504. Quem pega o prazo é o
+endpoint, que começa a contar antes do agente: `responder` preenche um
+`Andamento` com o hotspot e o Agent, e o endpoint monta a resposta com ele.
 O hook finaliza uma única linha JSON por pergunta, após a verificação, com o tipo
-efetivamente devolvido e o tempo total.
+efetivamente devolvido e o tempo total. Exceção: no tempo limite, a linha sai com
+`tipo: "erro"` mesmo quando a resposta segura é devolvida (o registro fecha no
+cancelamento); o aviso "tempo limite; resposta segura" marca esses casos.
 
 ## Proteções HTTP
 

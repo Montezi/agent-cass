@@ -29,7 +29,7 @@ def chamadas(monkeypatch: pytest.MonkeyPatch, ids_conhecidos: list[str]) -> list
     recebidas: list[dict[str, Any]] = []
 
     async def responder(
-        pedido: PedidoAgente, config: Any, progresso: Any = None, validar: Any = None
+        pedido: PedidoAgente, config: Any, progresso: Any = None, validar: Any = None, andamento: Any = None
     ) -> tuple:
         recebidas.append({"pedido": pedido, "progresso": progresso, "validar": validar})
         return RESPOSTA.model_copy(update={"idioma": pedido.language}), []

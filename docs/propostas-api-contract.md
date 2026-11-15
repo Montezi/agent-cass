@@ -154,7 +154,9 @@ não contêm argumentos, resultados, tokens do modelo ou raciocínio interno.
 O limite existente de **35 segundos** inclui preparação e invocação do agente.
 Como os cabeçalhos SSE já foram enviados, falhas usam HTTP `200` com o evento
 `erro`: `status: 504` para o limite excedido e `status: 500` para outras falhas,
-inclusive resposta inválida. `response` tem o mesmo formato e texto localizado
+inclusive resposta inválida. Se o limite acabar com o hotspot já consultado, o
+stream termina com o evento `resposta` e a resposta segura montada pelo código,
+como o endpoint JSON (200). `response` tem o mesmo formato e texto localizado
 dos erros do endpoint JSON, sem detalhes internos da exceção.
 
 Ao desconectar, o servidor cancela e aguarda a tarefa do agente. Uma chamada
