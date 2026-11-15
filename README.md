@@ -199,6 +199,19 @@ Made by **Space Valkyries** (Ana, Aline and Mirian) for the NASA Space Apps Chal
 
 This is a team project for the NASA Space Apps Challenge. It is not affiliated with or endorsed by NASA.
 
+## Use of AI
+
+We used AI tools to speed up the project, and we mark every use, as the NASA Space Apps rules require:
+
+| What | How AI was used | How it is marked |
+| --- | --- | --- |
+| **Cass's answers** | Gemini on Vertex AI writes the answers at run time. It only works with data returned by the read-only tools, and a final check compares every number in the answer with those results. | This README, [`docs/guardrails.md`](docs/guardrails.md), and the `tools` and `sources` of every answer |
+| **Code, tests and docs** | Developed with AI coding assistants (Claude); the team reviewed and approved each change. | This section, and a `Co-Authored-By` trailer on assisted commits |
+| **Cass images and the Space Valkyries logo** | AI-generated | Visible "AI-generated" label on every image in [`docs/images/`](docs/images) |
+| **Hotspot data** read by Cass | Sample data put together with AI assistance until the radar pipeline publishes real results | `"sample": true` and `"ai_generated": true` in the `metadata` of the files in `/dados`; Cass warns that the data is a sample |
+
+No AI-generated content uses NASA logos, flags or mission identifiers. The full list for the whole project is in the [project overview](https://github.com/Montezi/cassaandra-alert#use-of-ai) and in the app's **AI credits**.
+
 ## License
 
 [MIT](LICENSE). Data sources keep their own licenses and terms.
