@@ -1,0 +1,224 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "sample": true
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -117.62,
+          33.45
+        ]
+      },
+      "properties": {
+        "id": "norte-fire-ca",
+        "name": {
+          "pt": "Norte Fire, San Clemente, Califórnia",
+          "en": "Norte Fire, San Clemente, California"
+        },
+        "short_name": {
+          "pt": "Califórnia, EUA",
+          "en": "California, USA"
+        },
+        "enso_effect": {
+          "pt": "inverno mais chuvoso",
+          "en": "wetter winter"
+        },
+        "dominant_class": null,
+        "affected_area_km2": null,
+        "confidence": null,
+        "last_pass": null,
+        "bbox": [
+          -117.75,
+          33.38,
+          -117.5,
+          33.52
+        ],
+        "layers": {}
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -80.63,
+          -5.19
+        ]
+      },
+      "properties": {
+        "id": "costa-peru",
+        "name": {
+          "pt": "Piura, costa norte do Peru",
+          "en": "Piura, northern coast of Peru"
+        },
+        "short_name": {
+          "pt": "Costa do Peru",
+          "en": "Coast of Peru"
+        },
+        "enso_effect": {
+          "pt": "El Niño costeiro, chuva forte",
+          "en": "coastal El Niño, heavy rain"
+        },
+        "dominant_class": null,
+        "affected_area_km2": null,
+        "confidence": null,
+        "last_pass": null,
+        "bbox": [
+          -80.9,
+          -5.45,
+          -80.35,
+          -4.95
+        ],
+        "layers": {}
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -60.95,
+          -2.6
+        ]
+      },
+      "properties": {
+        "id": "norte-amazonia",
+        "name": {
+          "pt": "Rio Negro, Amazonas",
+          "en": "Rio Negro, Amazonas (Brazil)"
+        },
+        "short_name": {
+          "pt": "Rio Negro, AM",
+          "en": "Rio Negro, Brazil"
+        },
+        "enso_effect": {
+          "pt": "seca",
+          "en": "drought"
+        },
+        "dominant_class": null,
+        "affected_area_km2": null,
+        "confidence": null,
+        "last_pass": null,
+        "bbox": [
+          -61.4,
+          -3.0,
+          -60.5,
+          -2.2
+        ],
+        "layers": {}
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -51.2,
+          -30.0
+        ]
+      },
+      "properties": {
+        "id": "guaiba-rs",
+        "name": {
+          "pt": "Lago Guaíba, RS",
+          "en": "Guaíba Lake, RS (Brazil)"
+        },
+        "short_name": {
+          "pt": "Lago Guaíba",
+          "en": "Guaíba Lake"
+        },
+        "enso_effect": {
+          "pt": "chuva acima da média",
+          "en": "above-average rainfall"
+        },
+        "dominant_class": null,
+        "affected_area_km2": null,
+        "confidence": null,
+        "last_pass": null,
+        "bbox": [
+          -51.35,
+          -30.25,
+          -51.0,
+          -29.85
+        ],
+        "layers": {}
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          27.8,
+          -17.2
+        ]
+      },
+      "properties": {
+        "id": "kariba",
+        "name": {
+          "pt": "Lago Kariba, Zâmbia e Zimbábue",
+          "en": "Lake Kariba, Zambia and Zimbabwe"
+        },
+        "short_name": {
+          "pt": "Lago Kariba",
+          "en": "Lake Kariba"
+        },
+        "enso_effect": {
+          "pt": "mais seco até março",
+          "en": "drier until March"
+        },
+        "dominant_class": null,
+        "affected_area_km2": null,
+        "confidence": null,
+        "last_pass": null,
+        "bbox": [
+          26.7,
+          -18.1,
+          29.0,
+          -16.4
+        ],
+        "layers": {}
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          113.9,
+          -2.2
+        ]
+      },
+      "properties": {
+        "id": "borneo",
+        "name": {
+          "pt": "Kalimantan Central, Bornéu",
+          "en": "Central Kalimantan, Borneo"
+        },
+        "short_name": {
+          "pt": "Bornéu",
+          "en": "Borneo"
+        },
+        "enso_effect": {
+          "pt": "seca e fogo em turfeiras",
+          "en": "drought and peatland fires"
+        },
+        "dominant_class": null,
+        "affected_area_km2": null,
+        "confidence": null,
+        "last_pass": null,
+        "bbox": [
+          113.5,
+          -2.6,
+          114.3,
+          -1.8
+        ],
+        "layers": {}
+      }
+    }
+  ]
+}
