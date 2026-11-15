@@ -194,7 +194,7 @@ O build usa `INCLUIR_DECIDER=false` do Dockerfile, sem flag adicional no Cloud R
 ensaio privado. `PORT` é injetada pelo Cloud Run: `start.sh` escuta em `0.0.0.0`
 nessa porta, com padrão 8080. Não defina `GOOGLE_APPLICATION_CREDENTIALS` no
 serviço: o ADC usa a conta de execução. O limite HTTP é 60 s; o Cass mantém seu
-próprio prazo de 20 s.
+próprio prazo de 35 s, e o app espera até 45 s.
 [Opções de deploy](https://docs.cloud.google.com/sdk/gcloud/reference/run/deploy).
 
 Se um rollback anterior deixou o tráfego fixado em uma revisão, promova a nova
@@ -446,7 +446,7 @@ gcloud run deploy "$SERVICO" \
 
 **Critério de ativação:** a bateria com Decider deve ficar igual ou melhor que
 a variante desligada e a latência deve caber nos prazos do Cass (1,5 s por consulta
-ao Decider e 20 s para a pergunta completa). Enquanto isso não for demonstrado,
+ao Decider e 35 s para a pergunta completa). Enquanto isso não for demonstrado,
 mantenha `DECIDER_ATIVO=false` em produção. O piloto atual não satisfaz esse
 critério. Só depois da validação, altere a variável para `true` numa nova revisão,
 guardando a revisão anterior conforme o procedimento de rollback acima.

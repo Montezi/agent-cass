@@ -27,7 +27,8 @@ Response `200`, `application/json`:
 - `**text**` marks bold (the measured number). No HTML: the app escapes it.
 - Answer in `language` (`pt` or `en`). Keep Medido and Hipótese apart, and
   give the strength of any hypothesis.
-- The app waits **20 s**, then shows "Cass could not answer" with a retry.
+- The app waits **45 s**, then shows "Cass could not answer" with a retry.
+  Measured answers take 3–17 s; keep them well under 45 s.
   Hosting itself cuts requests at 60 s.
 
 How the app reacts:

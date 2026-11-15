@@ -47,7 +47,10 @@ MAX_TOKENS_DE_SAIDA = 2048
 MAX_TURNOS = 8
 MAX_TOKENS_GERADOS = 8192
 MAX_TOKENS_TOTAIS = 60000
-TEMPO_LIMITE_S = 20.0  # o app desiste depois disso
+# Prazo do pedido inteiro, no JSON e no stream (cass/main.py importa esta constante).
+# O app espera 45 s (frontend, PR #15) e o Cloud Run corta em 60 s: com 35 s, o 504
+# do Cass chega antes dos dois, e ainda cabe uma correção depois de uma resposta lenta.
+TEMPO_LIMITE_S = 35.0
 TENTATIVAS_DE_SAIDA = 3  # chamadas inválidas à ferramenta de saída antes de desistir
 MAX_VALORES_NA_CORRECAO = 8  # valores sem apoio listados na mensagem de correção
 IDIOMAS: dict[str, str] = {"pt": "português", "en": "inglês"}
@@ -297,7 +300,7 @@ async def responder(
                 # contexto mantém turns e tokens da primeira invocação na correção.
                 contexto_invocacao = resultado.invocation_context
                 # Mesmo Agent, portão, steering, fila e prazo: a repetição não
-                # concede novas consultas nem reinicia o limite de 20 segundos.
+                # concede novas consultas nem reinicia o prazo de TEMPO_LIMITE_S.
                 mensagem = _mensagem_de_correcao(verificacao, resultados, pedido.language)
     except TimeoutError as e:
         raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e

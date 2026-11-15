@@ -51,7 +51,7 @@ Não são certificação de segurança; servem para classificar os riscos observ
 
   Foram testadas a negação da nona chamada, preservação do orçamento na correção,
   recusa de novos pedidos enquanto SSE ocupa vaga e liberação no cancelamento.
-  O prazo de 20 s agora inclui a conferência inicial do hotspot; leitura do corpo
+  O prazo total (hoje 35 s) agora inclui a conferência inicial do hotspot; leitura do corpo
   tem prazo próprio de 5 s.
 - **Limites:** atrás de proxy, vários visitantes podem compartilhar o mesmo peer
   e a cota de 10/min. É obrigatório conferir isso na homologação; não reintroduzir

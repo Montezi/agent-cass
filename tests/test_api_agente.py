@@ -729,8 +729,15 @@ def test_agente_lento_devolve_504(
     assert "try again" in resposta.paragraphs[0]
 
 
-def test_tempo_limite_e_de_20_segundos() -> None:
-    assert agente.TEMPO_LIMITE_S == 20
+def test_tempo_limite_e_de_35_segundos() -> None:
+    # O app espera 45 s (frontend, PR #15) e o Cloud Run corta em 60 s: o 504 do
+    # Cass precisa chegar antes dos dois.
+    assert agente.TEMPO_LIMITE_S == 35
+    assert agente.TEMPO_LIMITE_S < 45 < 60
+
+
+def test_json_e_stream_usam_o_mesmo_prazo() -> None:
+    assert main.TEMPO_LIMITE_S is agente.TEMPO_LIMITE_S
 
 
 # ---------- camada 4: mesma execução, uma correção e resposta segura ----------

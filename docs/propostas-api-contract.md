@@ -151,7 +151,7 @@ A lista pública `tools` continua seguindo a regra atual: ferramentas de dados
 do Cass, sem repetição e na ordem em que foram usadas. Os eventos de progresso
 não contêm argumentos, resultados, tokens do modelo ou raciocínio interno.
 
-O limite existente de **20 segundos** inclui preparação e invocação do agente.
+O limite existente de **35 segundos** inclui preparação e invocação do agente.
 Como os cabeçalhos SSE já foram enviados, falhas usam HTTP `200` com o evento
 `erro`: `status: 504` para o limite excedido e `status: 500` para outras falhas,
 inclusive resposta inválida. `response` tem o mesmo formato e texto localizado
@@ -162,7 +162,7 @@ síncrona que já esteja executando numa thread pode terminar até seu timeout d
 rede, mesmo após esse cancelamento. Cada pedido tem sua própria fila e instância
 do hook. Não há retomada por `Last-Event-ID` nem reconexão automática: para tentar
 novamente, o frontend faz outro POST. Encerrar a conexão sem evento terminal deve
-ser tratado como erro de rede. O frontend mantém o timeout de 20 s e pode usar
+ser tratado como erro de rede. O frontend espera até 45 s e pode usar
 `AbortController` ao fechar a conversa.
 
 Para conferir localmente, com o serviço na porta 8080:

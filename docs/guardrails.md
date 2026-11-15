@@ -154,7 +154,7 @@ medido, hipótese, opções e sugestões. O formato público continua com
 `paragraphs`, `tools`, `sources` e `note`.
 
 Preparação, decisões de entrada, steering e repetição compartilham o prazo total
-de 20 s, incluindo a conferência inicial do ID. A correção não zera o portão
+de 35 s (no JSON e no stream; o app espera 45 s e o Cloud Run corta em 60 s), incluindo a conferência inicial do ID. A correção não zera o portão
 nem repete automaticamente o prefetch. O Agent limita a pergunta a 8 turnos,
 8192 tokens de saída e 60000 tokens totais acumulados, compartilhando o
 `invocation_context` com a correção. Os limites de tokens do SDK são conferidos

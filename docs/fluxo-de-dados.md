@@ -14,7 +14,7 @@ foram substituídos pelos documentos mais recentes encontrados nele.
 | Abrir um hotspot | `/dados/stats/<id>.json` | `src/features/painel/PanelContent.tsx:36` |
 | Abrir a previsão do hotspot | `/api/clima?hotspot=<id>&lat=<lat>&lon=<lon>` | `src/features/painel/useForecast.ts:21` |
 | Falha da previsão, inclusive timeout de 8 s | `/dados/forecast-snapshot.json` | `src/features/painel/useForecast.ts:36` |
-| Enviar uma pergunta ou sugestão ao Cass | `POST /api/agente`, prazo de 20 s | `src/features/cass/agentApi.ts:36` |
+| Enviar uma pergunta ou sugestão ao Cass | `POST /api/agente`, prazo de 45 s no app e 35 s no Cass | `src/features/cass/agentApi.ts:46` |
 | Inicializar o mapa ou trocar o tema | OpenFreeMap, cartografia de fundo | `src/features/mapa/basemap.ts:10` |
 
 Os JSON e as imagens de `/dados` são arquivos publicados no Firebase Hosting.
