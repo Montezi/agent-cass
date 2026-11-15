@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from cass import agente, ferramentas, main
 from cass.config import Configuracao
+from cass.hooks import ProgressoERegistro
 from cass.modelos import RespostaAgente, RespostaCass, RespostaDoModelo
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hotspots.geojson"
@@ -88,10 +89,18 @@ def simular(
         simulado = AgenteSimulado(**opcoes)
 
         def criar_agente_simulado(
-            config: Configuracao, idioma: str = "pt", skills_injetadas: Any = ()
+            config: Configuracao,
+            idioma: str = "pt",
+            skills_injetadas: Any = (),
+            progresso: ProgressoERegistro | None = None,
         ) -> AgenteSimulado:
             criados.append(
-                {"config": config, "idioma": idioma, "skills_injetadas": list(skills_injetadas)}
+                {
+                    "config": config,
+                    "idioma": idioma,
+                    "skills_injetadas": list(skills_injetadas),
+                    "progresso": progresso,
+                }
             )
             return simulado
 
@@ -210,6 +219,79 @@ def test_hotspot_buscado_conta_como_ferramenta_usada(
     simular()  # o modelo simulado não chama nenhuma ferramenta
 
     assert perguntar(cliente).tools == ["consultar_hotspot"]
+
+
+def test_consulta_antecipada_publica_progresso_e_registra_tempo(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    simular()
+
+    perguntar(cliente)
+
+    progresso = criados[0]["progresso"]
+    assert isinstance(progresso, ProgressoERegistro)
+    assert progresso.fila.get_nowait() == ("pensando", {})
+    assert progresso.fila.get_nowait() == ("ferramenta", {"nome": "consultar_hotspot"})
+    assert progresso.fila.get_nowait() == ("pensando", {})
+    assert progresso.fila.empty()
+    linhas = capsys.readouterr().out.splitlines()
+    assert len(linhas) == 1
+    registro = json.loads(linhas[0])
+    assert registro["tipo"] == "resposta"
+    assert [f["nome"] for f in registro["ferramentas"]] == ["consultar_hotspot"]
+    assert 0 <= registro["ferramentas"][0]["tempo_s"] <= registro["tempo_total_s"]
+
+
+def test_stream_usa_o_mesmo_responder_e_o_mesmo_contrato(
+    cliente: TestClient,
+    simular: Callable[..., AgenteSimulado],
+    dados: respx.Route,
+    criados: list[dict],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    simular()
+    pedido = {"question": "O que mudou?", "hotspot_id": "guaiba-rs", "language": "pt"}
+    esperado = cliente.post("/api/agente", json=pedido).json()
+
+    http = cliente.post("/api/agente/stream", json=pedido)
+
+    assert http.status_code == 200
+    eventos = []
+    for bloco in http.text.strip().split("\n\n"):
+        nome, dados_json = bloco.splitlines()
+        eventos.append((nome.removeprefix("event: "), json.loads(dados_json.removeprefix("data: "))))
+    assert eventos == [
+        ("pensando", {}),
+        ("ferramenta", {"nome": "consultar_hotspot"}),
+        ("pensando", {}),
+        ("resposta", esperado),
+    ]
+    assert criados[0]["progresso"] is not criados[1]["progresso"]
+    registros = [json.loads(linha) for linha in capsys.readouterr().out.splitlines()]
+    assert len(registros) == 2
+    assert all(r["tipo"] == "resposta" for r in registros)
+
+
+def test_falha_antes_do_agent_tambem_gera_um_registro(
+    cliente: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def falhar(hotspot_id: str) -> None:
+        raise RuntimeError("falha ao preparar os dados")
+
+    monkeypatch.setattr(agente, "_buscar_hotspot", falhar)
+
+    perguntar(cliente, status=500)
+
+    registros = [json.loads(linha) for linha in capsys.readouterr().out.splitlines()]
+    assert len(registros) == 1
+    assert registros[0]["tipo"] == "erro"
+    assert [f["nome"] for f in registros[0]["ferramentas"]] == ["consultar_hotspot"]
 
 
 def test_hotspot_buscado_com_dados_de_exemplo_gera_note(

@@ -25,6 +25,7 @@ from cass.ferramentas import (
     previsao_tempo,
     rascunhar_alerta,
 )
+from cass.hooks import ProgressoERegistro
 from cass.modelos import Fonte, PedidoAgente, RespostaCass, RespostaDoModelo
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ def criar_agente(
     config: Configuracao,
     idioma: Literal["pt", "en"] = "pt",
     skills_injetadas: Iterable[str] = (),
+    progresso: ProgressoERegistro | None = None,
 ) -> Agent:
     """Um Agent novo por pedido: ele guarda a conversa e recusa chamadas simultâneas.
 
@@ -163,51 +165,74 @@ def criar_agente(
         model=criar_modelo(config),
         tools=FERRAMENTAS_ATIVAS,
         plugins=[AgentSkills(skills=skills, strict=True)] if skills else [],
+        hooks=[progresso] if progresso is not None else [],
         system_prompt=PROMPT_DE_SISTEMA.format(idioma=IDIOMAS[idioma]),
         callback_handler=None,  # sem imprimir a resposta no terminal do servidor
     )
 
 
 async def responder(
-    pedido: PedidoAgente, config: Configuracao
+    pedido: PedidoAgente,
+    config: Configuracao,
+    progresso: ProgressoERegistro | None = None,
 ) -> tuple[RespostaCass, list[str]]:
     """Roda o agente com saída estruturada e devolve a RespostaCass e as ferramentas usadas.
 
     Levanta AgenteDemorou depois de TEMPO_LIMITE_S e AgenteSemResposta se não houver
     RespostaCass; outras falhas (Vertex AI, rede) sobem como vierem.
     """
+    progresso = progresso if progresso is not None else ProgressoERegistro()
+    progresso.iniciar()
+    tipo = "erro"
     try:
         async with asyncio.timeout(TEMPO_LIMITE_S):
-            hotspot = await _buscar_hotspot(pedido.hotspot_id)
+            if pedido.hotspot_id is not None:
+                # Esta consulta já existia fora do Agent; os callbacks do Strands
+                # não a veem. Observa-se o mesmo await, sem mudar seu resultado.
+                progresso.iniciar_ferramenta("hotspot-aberto", "consultar_hotspot")
+                try:
+                    hotspot = await _buscar_hotspot(pedido.hotspot_id)
+                finally:
+                    progresso.concluir_ferramenta("hotspot-aberto")
+            else:
+                hotspot = None
             nomes = skills_da_pergunta(pedido.question)
             injetadas = [s for s in carregar_skills() if s.name in nomes]
             agente = criar_agente(
-                config, pedido.language, skills_injetadas=[s.name for s in injetadas]
+                config,
+                pedido.language,
+                skills_injetadas=[s.name for s in injetadas],
+                progresso=progresso,
             )
             resultado = await agente.invoke_async(
                 _mensagem(pedido.question, hotspot, injetadas),
                 structured_output_model=RespostaDoModelo,
                 limits={"structured_output_attempts": TENTATIVAS_DE_SAIDA},
             )
+
+        do_modelo = resultado.structured_output
+        if not isinstance(do_modelo, RespostaDoModelo):
+            raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
+
+        buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
+        resultados = [*buscado, *_resultados_das_ferramentas(agente.messages)]
+        usadas = list(dict.fromkeys([n for n, _ in buscado] + _ferramentas_chamadas(agente.messages)))
+        # O que vem das ferramentas o código sabe; não fica a critério do modelo.
+        resposta = RespostaCass(
+            **do_modelo.model_dump(exclude={"hipotese"}),
+            hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
+            idioma=pedido.language,
+            fontes=_fontes(resultados),
+            dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
+        )
+        tipo = resposta.tipo
+        return resposta, usadas
     except TimeoutError as e:
         raise AgenteDemorou(f"passou de {TEMPO_LIMITE_S} s") from e
-
-    do_modelo = resultado.structured_output
-    if not isinstance(do_modelo, RespostaDoModelo):
-        raise AgenteSemResposta(f"stop_reason={resultado.stop_reason}")
-
-    buscado: list[Resultado] = [("consultar_hotspot", hotspot)] if hotspot else []
-    resultados = [*buscado, *_resultados_das_ferramentas(agente.messages)]
-    usadas = list(dict.fromkeys([n for n, _ in buscado] + _ferramentas_chamadas(agente.messages)))
-    # O que vem das ferramentas o código sabe; não fica a critério do modelo.
-    resposta = RespostaCass(
-        **do_modelo.model_dump(exclude={"hipotese"}),
-        hipotese=do_modelo.hipotese if _tem_hipotese(resultados) else None,
-        idioma=pedido.language,
-        fontes=_fontes(resultados),
-        dados_de_exemplo=any(r.get("dados_de_exemplo") is True for _, r in resultados),
-    )
-    return resposta, usadas
+    finally:
+        # AfterInvocationEvent cuida do caminho normal. Este fechamento cobre
+        # também falha na preparação, timeout e agentes simulados sem callbacks.
+        progresso.finalizar(tipo)
 
 
 async def _buscar_hotspot(hotspot_id: str | None) -> dict[str, Any] | None:

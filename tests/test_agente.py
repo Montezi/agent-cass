@@ -12,6 +12,7 @@ import pytest
 from dotenv import dotenv_values
 from fastapi.testclient import TestClient
 from google import genai
+from strands.hooks import BeforeInvocationEvent
 
 from cass import ferramentas, main
 from cass import agente as modulo_agente
@@ -25,6 +26,7 @@ from cass.agente import (
 )
 from cass.ferramentas import explicar_classe, exposicao, hipotese
 from cass.config import Configuracao, carregar_config
+from cass.hooks import ProgressoERegistro
 from cass.modelos import RespostaAgente
 
 RAIZ = Path(__file__).parent.parent
@@ -100,6 +102,15 @@ def test_ferramentas_sem_stats_existem_mas_ficam_fora_do_agente(config: Configur
         assert ferramenta in FERRAMENTAS_DO_CASS
         assert ferramenta not in FERRAMENTAS_ATIVAS
         assert ferramenta.tool_name not in nomes
+
+
+def test_agente_registra_o_hook_do_pedido(config: Configuracao) -> None:
+    progresso = ProgressoERegistro()
+
+    agente = criar_agente(config, progresso=progresso)
+    evento = BeforeInvocationEvent(agent=agente)
+
+    assert progresso.antes_da_invocacao in agente.hooks.get_callbacks_for(evento)
 
 
 def test_agente_tem_o_prompt_do_apendice_c(config: Configuracao) -> None:
