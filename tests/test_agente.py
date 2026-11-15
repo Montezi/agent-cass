@@ -1,5 +1,6 @@
 """Testes do agente: montagem (sem rede) e uma pergunta real ao Gemini."""
 
+import json
 import re
 import threading
 from collections.abc import Iterator
@@ -9,11 +10,13 @@ from pathlib import Path
 
 import pytest
 from dotenv import dotenv_values
+from fastapi.testclient import TestClient
 from google import genai
 
-from cass import ferramentas
+from cass import ferramentas, main
 from cass.agente import PROMPT_DE_SISTEMA, TEMPERATURA, criar_agente, criar_modelo
 from cass.config import Configuracao, carregar_config
+from cass.modelos import RespostaAgente
 
 RAIZ = Path(__file__).parent.parent
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -82,7 +85,7 @@ def dados_servidos() -> Iterator[str]:
 
 
 @pytest.mark.gemini
-def test_pergunta_sobre_o_guaiba(
+def test_api_agente_responde_sobre_o_guaiba(
     dados_servidos: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for nome, valor in dotenv_values(RAIZ / ".env").items():
@@ -91,19 +94,20 @@ def test_pergunta_sobre_o_guaiba(
     monkeypatch.setenv("DADOS_BASE", dados_servidos)
     ferramentas.limpar_cache()
 
-    agente = criar_agente(carregar_config())
-    texto = str(agente("O que mudou no Guaíba?")).strip()
-    print(f"\n--- resposta do Cass ---\n{texto}\n")
+    # Como o frontend chama (agentApi.ts).
+    with TestClient(main.app) as cliente:
+        http = cliente.post(
+            "/api/agente",
+            json={"question": "O que mudou no Guaíba?", "hotspot_id": "guaiba-rs", "language": "pt"},
+        )
+    print(f"\n--- resposta ---\n{json.dumps(http.json(), ensure_ascii=False, indent=2)}\n")
 
-    chamadas = [
-        bloco["toolUse"]
-        for mensagem in agente.messages
-        for bloco in mensagem["content"]
-        if "toolUse" in bloco
-    ]
-    assert {"name": "consultar_hotspot", "id": "guaiba-rs"} in [
-        {"name": c["name"], "id": c["input"].get("id")} for c in chamadas
-    ]
-    assert "exemplo" in texto.lower()
+    assert http.status_code == 200
+    resposta = RespostaAgente.model_validate(http.json())
+    assert "consultar_hotspot" in resposta.tools
+    # Só existe porque o hotspot buscado veio do fixture (metadata.sample = true).
+    assert resposta.note is not None and resposta.note.startswith("Dados de exemplo")
+    assert resposta.sources
     # O fixture não tem nenhum valor medido: qualquer área citada seria inventada.
-    assert not re.search(r"\d\s*km", texto)
+    for paragrafo in resposta.paragraphs:
+        assert not re.search(r"\d\s*km", paragrafo), paragrafo

@@ -28,7 +28,9 @@ Trabalhe um passo por vez e não adiante passos que não foram pedidos.
    inglês: `dominant_class`, `flood`, `affected_area_km2`...). O espelho Pydantic fica em
    `cass/modelos.py`. Valores medidos podem ser `null`: nunca invente número.
    Se `metadata.sample` for `true`, o Cass avisa que os dados são de exemplo.
-6. **Saída:** o `/chat` sempre devolve o esquema `RespostaCass` (ver o plano, apêndice A).
+6. **Saída:** o `POST /api/agente` segue `docs/api-contract.md`, que é o formato público e
+   vale sobre o apêndice A. Por dentro, o agente produz `RespostaCass` (apêndice A) e
+   `cass/contrato.py` converte para o contrato.
 7. **Harness:** Skills = conhecimento sob demanda; Interventions = regras duras
    (Deny/Transform); `SteeringCass` = correção de rumo (Guide); Hooks = só observar.
 8. **Decider:** só por `decider_sim()`, que respeita `DECIDER_ATIVO` e devolve um valor
@@ -47,9 +49,10 @@ agent-cass/
 ├── cass/
 │   ├── __init__.py
 │   ├── config.py        # lê as variáveis de ambiente
-│   ├── main.py          # FastAPI: /health e /chat
+│   ├── main.py          # FastAPI: /health e /api/agente
 │   ├── agente.py        # monta o Agent do Strands
-│   ├── modelos.py       # Pydantic: contrato de dados, Pedido, RespostaCass
+│   ├── contrato.py      # RespostaCass -> formato de docs/api-contract.md
+│   ├── modelos.py       # Pydantic: contrato de dados, PedidoAgente/RespostaAgente, RespostaCass
 │   ├── ferramentas.py   # as 8 ferramentas (@tool)
 │   ├── guardrails.py    # decider_sim, PortaoDeFerramentas, LimpaDados, camadas 1 e 4
 │   ├── steering.py      # SteeringCass

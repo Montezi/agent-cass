@@ -149,3 +149,69 @@ class ColecaoHotspots(_Contrato):
         if repetidos:
             raise ValueError(f"ids de hotspot repetidos: {', '.join(repetidos)}")
         return self
+
+
+# ---------- Contrato público do POST /api/agente (docs/api-contract.md) ----------
+# Espelho do zod agentAnswerSchema (frontend, src/features/cass/agentApi.ts).
+# Chaves em inglês, como no contrato.
+
+
+class PedidoAgente(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)  # 1.000: camada 1 do apêndice C
+    hotspot_id: str | None = None  # gaveta aberta no app; o app sempre manda
+    language: Literal["pt", "en"]
+
+
+class RespostaAgente(BaseModel):
+    # **texto** marca o número medido em negrito; sem HTML (o app escapa).
+    paragraphs: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    tools: list[str]  # ferramentas chamadas, mostradas como chips
+    sources: list[str]  # fontes com data: "NISAR GCOV, 12 nov 2026"
+    note: str | None = None  # aviso opcional
+
+
+# ---------- Formato interno do agente (apêndice A do plano) ----------
+# Campos, tipos e limites iguais ao apêndice A. As descrições (Field description)
+# repetem os comentários de lá: o Gemini lê o esquema da RespostaCass como ferramenta.
+# cass/contrato.py converte a RespostaCass para a RespostaAgente.
+
+
+class Fonte(BaseModel):
+    nome: str = Field(description='Nome da fonte, como "NISAR GCOV", "Meteomatics", "WorldPop"')
+    data: str = Field(description="Data do dado, não da pergunta")
+    ferramenta: str = Field(description="Qual ferramenta devolveu o dado")
+
+
+class Hipotese(BaseModel):
+    texto: str
+    evidencia: str
+    forca: Literal["fraca", "moderada", "forte"]
+
+
+class RespostaCass(BaseModel):
+    """Resposta do Cass ao app."""
+
+    tipo: Literal["resposta", "pergunta_de_volta", "fora_do_escopo", "erro"] = Field(
+        description=(
+            "resposta: respondeu com dados das ferramentas; pergunta_de_volta: o hotspot "
+            "não está claro, pergunte e preencha opcoes; fora_do_escopo: a mensagem não é "
+            "sobre os hotspots, o radar, o clima, o El Niño ou este app"
+        )
+    )
+    idioma: Literal["pt", "en"]
+    texto: str = Field(
+        max_length=900,
+        description="A resposta, em parágrafos separados por linha em branco; o que foi "
+        "medido vai em medido e a hipótese em hipotese, sem repetir aqui",
+    )
+    medido: list[str] = Field(
+        default=[],
+        description="Frases com número, unidade e data, só do que foi medido; "
+        "marque o número com **, como **212 km²**",
+    )
+    hipotese: Hipotese | None = None
+    fontes: list[Fonte] = []
+    confianca: Literal["alta", "media", "baixa"]
+    opcoes: list[str] = Field(default=[], description="Botões quando o Cass pergunta de volta")
+    sugestoes: list[str] = Field(default=[], description="Próximas perguntas")
+    dados_de_exemplo: bool = Field(default=False, description="true quando metadata.sample = true")
